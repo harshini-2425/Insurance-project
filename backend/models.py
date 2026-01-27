@@ -99,6 +99,7 @@ class Claim(Base):
     claim_type = Column(String, nullable=False)
     incident_date = Column(Date, nullable=False)
     amount_claimed = Column(Numeric(10, 2), nullable=False)
+    description = Column(Text, nullable=True)
     status = Column(SQLEnum(ClaimStatusEnum), default=ClaimStatusEnum.draft)
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
     

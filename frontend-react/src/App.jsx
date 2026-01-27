@@ -4,10 +4,12 @@ import Register from './pages/Register'
 import Profile from './pages/Profile'
 import BrowsePolicies from './pages/BrowsePolicies'
 import ComparePolicies from './pages/ComparePolicies'
+import Claims from './pages/Claims'
 import Header from './components/Header'
 import './App.css'
 import Preferences from "./pages/Preferences";
 import Recommendations from "./pages/Recommendations";
+import ProtectedRecommendations from "./components/ProtectedRecommendations"
 
 function App() {
   return (
@@ -22,6 +24,15 @@ function App() {
         <Route path="/compare" element={<ComparePolicies />} />
         <Route path="/preferences" element={<Preferences />} />
         <Route path="/recommendations" element={<Recommendations />} />
+        <Route
+          path="/recommendations"
+          element={
+            <ProtectedRecommendations>
+              <Recommendations />
+            </ProtectedRecommendations>
+          }
+        />
+        <Route path="/claims" element={<Claims />} />
 
       </Routes>
     </Router>

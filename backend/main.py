@@ -6,6 +6,7 @@ from database import engine
 import models, schemas
 from auth import hash_password, verify_password, create_access_token
 from deps import get_db, get_current_user
+from scoring import rank_policies
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -275,112 +276,537 @@ def get_user_policy(
     )
 
 @app.post("/user/preferences")
-def save_preferences(
-    data: schemas.UserPreferences,
+def save_preferences(data: dict, token: str = Query(...), db: Session = Depends(get_db)):
+    """Save user preferences and auto-generate recommendations"""
+    try:
+        user = get_current_user(token, db)
+
+        diseases = data.get("diseases", [])
+        bmi = float(data.get("bmi") or 0)
+        age = int(data.get("age") or 0)
+        income = int(data.get("income") or 0)
+
+        # RISK LOGIC (simplified: low/medium/high)
+        if len(diseases) >= 4 or bmi >= 30:
+            risk = "high"
+        elif len(diseases) >= 2 or bmi >= 25:
+            risk = "medium"
+        else:
+            risk = "low"
+
+        user.risk_profile = {
+            **data,
+            "bmi": bmi,
+            "risk_level": risk,
+            "risk_profile": risk  # Both names for compatibility
+        }
+
+        db.commit()
+
+        # 🎯 AUTO-GENERATE RECOMMENDATIONS with full user data
+        try:
+            risk_profile = risk  # Use calculated risk_profile
+            # Get preferences from the stored risk_profile dict
+            preferences = {
+                'preferred_policy_types': user.risk_profile.get('preferred_policy_types', []),
+                'max_premium': user.risk_profile.get('max_premium')
+            }
+            
+            # Build full user data for comprehensive scoring
+            user_full_data = {
+                'age': age,
+                'income': income,
+                'bmi': bmi,
+                'diseases': diseases,
+                'has_kids': data.get('has_kids', False),
+                'marital_status': data.get('marital_status', ''),
+                'height': float(data.get('height') or 0),
+                'weight': float(data.get('weight') or 0)
+            }
+            
+            # Get all available policies
+            all_policies = db.query(models.Policy).all()
+            
+            if all_policies:
+                # Convert policies to dict for scoring
+                policies_dict = []
+                for p in all_policies:
+                    policies_dict.append({
+                        'id': p.id,
+                        'title': p.title,
+                        'premium': float(p.premium),
+                        'coverage': p.coverage or {},
+                        'policy_type': p.policy_type,
+                        'provider_id': p.provider_id
+                    })
+                
+                # Score and rank policies with full user data
+                ranked = rank_policies(policies_dict, preferences, risk_profile, user_full_data, top_n=5)
+                
+                # Clear existing recommendations
+                db.query(models.Recommendation).filter(models.Recommendation.user_id == user.id).delete()
+                
+                # Save new recommendations
+                for policy_dict, score, reason in ranked:
+                    rec = models.Recommendation(
+                        user_id=user.id,
+                        policy_id=policy_dict['id'],
+                        score=score,
+                        reason=reason
+                    )
+                    db.add(rec)
+                
+                db.commit()
+        except Exception as e:
+            print(f"Recommendation generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            db.rollback()
+            # Don't fail preferences save if recommendations fail
+
+        return {"message": "Preferences saved", "recommendations_generated": True}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+# ============ MODULE D: RECOMMENDATIONS (Week 4) ============
+
+@app.post("/recommendations/generate")
+def generate_recommendations(
     token: str = Query(...),
     db: Session = Depends(get_db)
 ):
-    user = get_current_user(token, db)
-
-    diseases = data.diseases
-    bmi = data.bmi
-
-    # -------------------
-    # RISK CALCULATION
-    # -------------------
-    if len(diseases) >= 4 or bmi >= 30:
-        risk = "high"
-    elif len(diseases) >= 2 or bmi >= 25:
-        risk = "medium"
-    else:
-        risk = "low"
-
-    user.risk_profile = {
-        "age": data.age,
-        "income": data.income,
-        "marital_status": data.marital_status,
-        "has_kids": data.has_kids,
-        "bmi": data.bmi,
-        "diseases": data.diseases,
-        "preferred_policy_types": data.preferred_policy_types,
-        "max_premium": data.max_premium,
-        "risk_level": risk
-    }
-
-    db.commit()
-    return {"message": "Preferences saved successfully"}
-
-
+    """Generate and save personalized policy recommendations for user"""
+    try:
+        user = get_current_user(token, db)
+        
+        # Get user preferences and health data
+        if not user.risk_profile:
+            raise HTTPException(status_code=400, detail="Please set your preferences first")
+        
+        risk_profile = user.risk_profile.get('risk_profile', 'moderate')
+        preferences = user.risk_profile.get('preferences', {})
+        
+        # Build full user data for comprehensive scoring
+        user_full_data = {
+            'age': user.risk_profile.get('age'),
+            'income': user.risk_profile.get('income'),
+            'bmi': user.risk_profile.get('bmi'),
+            'diseases': user.risk_profile.get('diseases', []),
+            'has_kids': user.risk_profile.get('has_kids'),
+            'marital_status': user.risk_profile.get('marital_status'),
+            'height': user.risk_profile.get('height'),
+            'weight': user.risk_profile.get('weight')
+        }
+        
+        # Get all available policies
+        all_policies = db.query(models.Policy).all()
+        if not all_policies:
+            raise HTTPException(status_code=404, detail="No policies available")
+        
+        # Convert policies to dict for scoring
+        policies_dict = []
+        for p in all_policies:
+            policies_dict.append({
+                'id': p.id,
+                'title': p.title,
+                'premium': float(p.premium),
+                'coverage': p.coverage or {},
+                'policy_type': p.policy_type,
+                'provider_id': p.provider_id
+            })
+        
+        # Score and rank policies with full user data
+        # Score and rank policies with STRICT FILTERING applied
+        # (rank_policies applies all filters BEFORE scoring)
+        ranked = rank_policies(policies_dict, preferences, risk_profile, user_full_data, top_n=5)
+        
+        # Check if any policies passed filtering
+        if not ranked:
+            return {
+                "message": "No policies match your filters",
+                "details": f"Your preferences (type: {preferences.get('preferred_policy_types')}, max: ₹{preferences.get('max_premium')}) "
+                          f"and risk profile ({risk_profile}) didn't match any available policies.",
+                "recommendations": []
+            }
+        
+        # Clear existing recommendations
+        db.query(models.Recommendation).filter(models.Recommendation.user_id == user.id).delete()
+        
+        # Save new recommendations (only those that passed ALL filters)
+        saved_recommendations = []
+        for policy_dict, score, reason in ranked:
+            # Additional validation: Ensure policy matches user filters
+            policy_type = policy_dict.get('policy_type')
+            premium = Decimal(str(policy_dict.get('premium', 0)))
+            
+            # Verify policy type is allowed
+            if preferences.get('preferred_policy_types') and policy_type not in preferences.get('preferred_policy_types'):
+                print(f"⚠️ Skipping {policy_dict['title']} - not in preferred types")
+                continue
+            
+            # Verify premium is within budget
+            max_prem = preferences.get('max_premium')
+            if max_prem and premium > Decimal(str(max_prem)):
+                print(f"⚠️ Skipping {policy_dict['title']} - exceeds budget")
+                continue
+            
+            # All filters passed - save recommendation
+            rec = models.Recommendation(
+                user_id=user.id,
+                policy_id=policy_dict['id'],
+                score=score,
+                reason=reason
+            )
+            db.add(rec)
+            saved_recommendations.append(rec)
+        
+        db.commit()
+        
+        # Return with policy details
+        result = []
+        for rec in saved_recommendations:
+            db.refresh(rec)
+            policy = db.query(models.Policy).filter(models.Policy.id == rec.policy_id).first()
+            result.append({
+                'id': rec.id,
+                'policy_id': rec.policy_id,
+                'score': float(rec.score),
+                'reason': rec.reason,
+                'created_at': rec.created_at,
+                'policy': {
+                    'id': policy.id,
+                    'title': policy.title,
+                    'premium': float(policy.premium),
+                    'coverage': policy.coverage,
+                    'provider': {
+                        'id': policy.provider.id,
+                        'name': policy.provider.name
+                    }
+                }
+            })
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/recommendations")
-def get_recommendations(token: str, db: Session = Depends(get_db)):
+def get_recommendations(
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get user's saved recommendations"""
     user = get_current_user(token, db)
-    prefs = user.risk_profile
-
-    age = int(prefs.get("age", 0))
-    diseases = prefs.get("diseases", [])
-    bmi = float(prefs.get("bmi", 0))
-    income = int(prefs.get("income", 0))
-
-    # -------------------
-    # RISK LEVEL LOGIC
-    # -------------------
-    risk_level = "low"
-
-    if len(diseases) >= 5 or bmi >= 30:
-        risk_level = "high"
-    elif len(diseases) >= 2 or bmi >= 25:
-        risk_level = "medium"
-
-    # -------------------
-    # POLICY FILTER BY AGE
-    # -------------------
-    allowed_types = []
-
-    if age < 15:
-        allowed_types = ["health"]
-    elif age <= 45:
-        allowed_types = ["health", "auto", "travel", "home"]
-    else:
-        allowed_types = ["health", "life"]
-
-    policies = db.query(models.Policy).filter(
-    models.Policy.policy_type.in_(allowed_types)
-    )
-
-    if prefs.get("preferred_policy_types"):
-        policies = policies.filter(
-            models.Policy.policy_type.in_(prefs["preferred_policy_types"])
-        )
-
-    if prefs.get("max_premium"):
-        policies = policies.filter(
-            models.Policy.premium <= prefs["max_premium"]
-      )
-
-    policies = policies.all()
-
-
-    recommendations = []
-
-    for p in policies:
-        score = 0
-
-        if p.policy_type == "health":
-            score += 3
-        if income > 500000:
-            score += 2
-        if risk_level == "high" and p.policy_type != "health":
-            continue  # ❌ reject risky policies
-
-        recommendations.append({
-            "title": p.title,
-            "policy_type": p.policy_type,
-            "premium": p.premium,
-            "reason": f"Recommended for {risk_level} risk profile & age {age}"
+    
+    recommendations = db.query(models.Recommendation).filter(
+        models.Recommendation.user_id == user.id
+    ).order_by(models.Recommendation.score.desc()).all()
+    
+    if not recommendations:
+        return []
+    
+    result = []
+    for rec in recommendations:
+        policy = db.query(models.Policy).filter(models.Policy.id == rec.policy_id).first()
+        
+        # Skip if policy doesn't exist
+        if not policy:
+            continue
+            
+        result.append({
+            'id': rec.id,
+            'user_id': rec.user_id,
+            'policy_id': rec.policy_id,
+            'score': float(rec.score),
+            'reason': rec.reason,
+            'created_at': rec.created_at,
+            'policy': {
+                'id': policy.id,
+                'title': policy.title,
+                'premium': float(policy.premium),
+                'term_months': policy.term_months,
+                'deductible': float(policy.deductible),
+                'coverage': policy.coverage,
+                'policy_type': policy.policy_type,
+                'created_at': policy.created_at,
+                'provider': {
+                    'id': policy.provider.id,
+                    'name': policy.provider.name,
+                    'country': policy.provider.country,
+                    'created_at': policy.provider.created_at
+                }
+            }
         })
+    
+    return result
 
-    return recommendations
+@app.delete("/recommendations/{recommendation_id}")
+def delete_recommendation(
+    recommendation_id: int,
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Delete a specific recommendation"""
+    user = get_current_user(token, db)
+    
+    rec = db.query(models.Recommendation).filter(
+        models.Recommendation.id == recommendation_id,
+        models.Recommendation.user_id == user.id
+    ).first()
+    
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    
+    db.delete(rec)
+    db.commit()
+    
+    return {"message": "Recommendation deleted"}
+
+# ============ MODULE E: CLAIMS (Week 5) ============
+
+@app.post("/claims")
+def create_claim(
+    token: str = Query(...),
+    user_policy_id: int = None,
+    claim_type: str = None,
+    incident_date: str = None,
+    amount_claimed: Decimal = None,
+    description: str = None,
+    db: Session = Depends(get_db)
+):
+    """Create a new insurance claim"""
+    try:
+        user = get_current_user(token, db)
+        
+        # Verify user owns the policy
+        user_policy = db.query(models.UserPolicy).filter(
+            models.UserPolicy.id == user_policy_id,
+            models.UserPolicy.user_id == user.id
+        ).first()
+        
+        if not user_policy:
+            raise HTTPException(status_code=404, detail="Policy not found")
+        
+        # Generate unique claim number
+        claim_number = f"CLM-{uuid.uuid4().hex[:8].upper()}"
+        
+        claim = models.Claim(
+            user_policy_id=user_policy_id,
+            claim_number=claim_number,
+            claim_type=claim_type,
+            incident_date=incident_date,
+            amount_claimed=amount_claimed,
+            status="draft",
+            description=description
+        )
+        
+        db.add(claim)
+        db.commit()
+        db.refresh(claim)
+        
+        return {
+            "id": claim.id,
+            "claim_number": claim.claim_number,
+            "status": claim.status,
+            "created_at": claim.created_at
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/claims")
+def get_user_claims(
+    token: str = Query(...),
+    status: str = None,
+    db: Session = Depends(get_db)
+):
+    """Get all claims for the logged-in user"""
+    user = get_current_user(token, db)
+    
+    query = db.query(models.Claim).join(
+        models.UserPolicy,
+        models.Claim.user_policy_id == models.UserPolicy.id
+    ).filter(models.UserPolicy.user_id == user.id)
+    
+    if status:
+        query = query.filter(models.Claim.status == status)
+    
+    claims = query.order_by(models.Claim.created_at.desc()).all()
+    
+    result = []
+    for claim in claims:
+        user_policy = claim.user_policy
+        policy = user_policy.policy
+        
+        result.append({
+            "id": claim.id,
+            "claim_number": claim.claim_number,
+            "claim_type": claim.claim_type,
+            "amount_claimed": float(claim.amount_claimed),
+            "status": claim.status,
+            "incident_date": str(claim.incident_date),
+            "created_at": claim.created_at,
+            "policy": {
+                "id": policy.id,
+                "title": policy.title,
+                "premium": float(policy.premium)
+            },
+            "documents_count": len(claim.documents)
+        })
+    
+    return result
+
+@app.get("/claims/{claim_id}")
+def get_claim_detail(
+    claim_id: int,
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get detailed claim information"""
+    user = get_current_user(token, db)
+    
+    claim = db.query(models.Claim).join(
+        models.UserPolicy,
+        models.Claim.user_policy_id == models.UserPolicy.id
+    ).filter(
+        models.Claim.id == claim_id,
+        models.UserPolicy.user_id == user.id
+    ).first()
+    
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    
+    user_policy = claim.user_policy
+    policy = user_policy.policy
+    
+    return {
+        "id": claim.id,
+        "claim_number": claim.claim_number,
+        "claim_type": claim.claim_type,
+        "amount_claimed": float(claim.amount_claimed),
+        "status": claim.status,
+        "incident_date": str(claim.incident_date),
+        "description": claim.description,
+        "created_at": claim.created_at,
+        "policy": {
+            "id": policy.id,
+            "title": policy.title,
+            "premium": float(policy.premium),
+            "policy_number": user_policy.policy_number
+        },
+        "documents": [
+            {
+                "id": doc.id,
+                "doc_type": doc.doc_type,
+                "file_url": doc.file_url,
+                "uploaded_at": doc.uploaded_at
+            }
+            for doc in claim.documents
+        ]
+    }
+
+@app.post("/claims/{claim_id}/documents")
+def upload_claim_document(
+    claim_id: int,
+    token: str = Query(...),
+    doc_type: str = None,
+    file_content: str = None,
+    file_name: str = None,
+    db: Session = Depends(get_db)
+):
+    """Upload a document for a claim (base64 encoded or file reference)"""
+    try:
+        user = get_current_user(token, db)
+        
+        # Verify claim belongs to user
+        claim = db.query(models.Claim).join(
+            models.UserPolicy,
+            models.Claim.user_policy_id == models.UserPolicy.id
+        ).filter(
+            models.Claim.id == claim_id,
+            models.UserPolicy.user_id == user.id
+        ).first()
+        
+        if not claim:
+            raise HTTPException(status_code=404, detail="Claim not found")
+        
+        # For now, store as reference (in production would be S3/cloud storage)
+        # Generate a file reference
+        file_url = f"claims/{claim.claim_number}/{file_name}"
+        
+        doc = models.ClaimDocument(
+            claim_id=claim_id,
+            file_url=file_url,
+            doc_type=doc_type
+        )
+        
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+        
+        return {
+            "id": doc.id,
+            "doc_type": doc.doc_type,
+            "file_url": doc.file_url,
+            "uploaded_at": doc.uploaded_at
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/claims/{claim_id}/submit")
+def submit_claim(
+    claim_id: int,
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Submit a claim (change from draft to submitted)"""
+    user = get_current_user(token, db)
+    
+    claim = db.query(models.Claim).join(
+        models.UserPolicy,
+        models.Claim.user_policy_id == models.UserPolicy.id
+    ).filter(
+        models.Claim.id == claim_id,
+        models.UserPolicy.user_id == user.id
+    ).first()
+    
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    
+    if claim.status != "draft":
+        raise HTTPException(status_code=400, detail="Only draft claims can be submitted")
+    
+    claim.status = "submitted"
+    db.commit()
+    
+    return {
+        "message": "Claim submitted successfully",
+        "claim_number": claim.claim_number,
+        "status": claim.status
+    }
+
+
+
 
 
 

@@ -112,6 +112,24 @@ export default function Header() {
                                 </a>
                                 <a
                                     onClick={() => {
+                                        navigate("/claims");
+                                        setShowMenu(false);
+                                    }}
+                                    style={{
+                                        display: "block",
+                                        padding: "12px 20px",
+                                        cursor: "pointer",
+                                        borderBottom: "1px solid #eee",
+                                        textDecoration: "none",
+                                        color: "black"
+                                    }}
+                                    onMouseEnter={e => e.target.style.backgroundColor = "#f5f5f5"}
+                                    onMouseLeave={e => e.target.style.backgroundColor = "white"}
+                                >
+                                    📋 Insurance Claims
+                                </a>
+                                <a
+                                    onClick={() => {
                                         handleLogout();
                                         setShowMenu(false);
                                     }}

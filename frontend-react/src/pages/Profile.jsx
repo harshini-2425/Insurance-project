@@ -1,88 +1,113 @@
 import { useEffect, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { api } from "../services/api"
 
 export default function Profile() {
+    const navigate = useNavigate()
     const token = localStorage.getItem("token")
+
     const [user, setUser] = useState(null)
-    const [error, setError] = useState("")
+    const [loading, setLoading] = useState(true)
 
     useEffect(() => {
-        if (!token) return
-
-        api.get(`/user/me?token=${token}`)
-            .then(res => {
+        async function loadProfile() {
+            try {
+                const res = await api.get(`/user/me?token=${token}`)
                 setUser(res.data)
-            })
-            .catch(err => {
+            } catch (err) {
                 console.error("Profile error:", err)
-                setError("Failed to load profile")
-            })
-    }, [token])
+            } finally {
+                setLoading(false)
+            }
+        }
+        loadProfile()
+    }, [])
 
-    if (error) return <p style={{ color: "red" }}>{error}</p>
-    if (!user) return <p>Loading...</p>
+    if (loading) return <p style={{ padding: 20 }}>Loading profile...</p>
+    if (!user) return <p style={{ padding: 20 }}>Failed to load profile</p>
 
-    const riskProfile = user.risk_profile || {}
-    const riskLevel = riskProfile.risk_level || "unknown"
+    const rp = user.risk_profile || {}
 
     return (
-        <div style={{
-            minHeight: "100vh",
-            background: "#f4f6f8",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            padding: "20px"
-        }}>
-            <div style={{
-                width: "520px",
-                background: "#ffffff",
-                padding: "30px",
-                borderRadius: "14px",
-                boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
-                color: "#222",
-                fontFamily: "Segoe UI, sans-serif"
-            }}>
-                <h2 style={{ color: "#1976D2", marginBottom: "15px" }}>
-                    👤 User Profile
-                </h2>
+        <div style={pageStyle}>
+            <div style={cardStyle}>
+                <h2 style={title}>👤 My Profile</h2>
 
-                <p><b>Name:</b> {user.name}</p>
-                <p><b>Email:</b> {user.email}</p>
-                <p><b>DOB:</b> {user.dob}</p>
+                <p><b>Age:</b> {rp.age}</p>
+                <p><b>Income:</b> ₹{rp.income}</p>
+                <p><b>Marital Status:</b> {rp.marital_status}</p>
+                <p><b>Has Kids:</b> {rp.has_kids ? "Yes" : "No"}</p>
 
-                <hr style={{ margin: "20px 0" }} />
+                <p><b>Height:</b> {rp.height} cm</p>
+                <p><b>Weight:</b> {rp.weight} kg</p>
+                <p><b>BMI:</b> {rp.bmi}</p>
 
-                <h3 style={{ color: "#1976D2" }}>🩺 Health & Risk Profile</h3>
+                <p><b>Diseases:</b> {rp.diseases?.join(", ") || "None"}</p>
+                <p><b>Risk Level:</b> {rp.risk_level}</p>
 
-                {user.risk_profile ? (
-                    <>
-                        <p><b>Age:</b> {riskProfile.age ?? "—"}</p>
-                        <p><b>Annual Income:</b> ₹{riskProfile.income ?? "—"}</p>
-                        <p><b>BMI:</b> {riskProfile.bmi ?? "—"}</p>
-                        <p>
-                            <b>Diseases:</b>{" "}
-                            {riskProfile.diseases?.length
-                                ? riskProfile.diseases.join(", ")
-                                : "None"}
-                        </p>
+                <p>
+                    <b>Preferred Policies:</b>{" "}
+                    {rp.preferred_policy_types?.join(", ") || "Not set"}
+                </p>
 
-                        <p style={{
-                            fontWeight: "bold",
-                            marginTop: "10px",
-                            color:
-                                riskLevel === "high" ? "red" :
-                                    riskLevel === "medium" ? "orange" :
-                                        riskLevel === "low" ? "green" :
-                                            "#555"
-                        }}>
-                            Risk Level: {riskLevel.toUpperCase()}
-                        </p>
-                    </>
-                ) : (
-                    <p>No preferences saved yet</p>
-                )}
+                <p><b>Max Premium:</b> ₹{rp.max_premium}</p>
+
+                <button
+                    style={button}
+                    onClick={() => navigate("/recommendations")}
+                >
+                    ⭐ View Recommendations
+                </button>
+
+                <button
+                    style={{ ...button, background: "#667eea", marginTop: "10px" }}
+                    onClick={() => navigate("/preferences")}
+                >
+                    ✏️ Update Preferences
+                </button>
+
+                <button
+                    style={{ ...button, background: "#764ba2", marginTop: "10px" }}
+                    onClick={() => navigate("/claims")}
+                >
+                    📋 Insurance Claims
+                </button>
             </div>
         </div>
     )
+}
+
+/* styles */
+const pageStyle = {
+    minHeight: "100vh",
+    background: "#F4F6F8",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center"
+}
+
+const cardStyle = {
+    width: "520px",
+    background: "#fff",
+    padding: "30px",
+    borderRadius: "14px",
+    boxShadow: "0 8px 20px rgba(0,0,0,0.15)",
+    color: "#333"
+}
+
+const title = {
+    color: "#1976D2",
+    marginBottom: "15px"
+}
+
+const button = {
+    marginTop: "20px",
+    width: "100%",
+    padding: "12px",
+    background: "#1976D2",
+    color: "#fff",
+    border: "none",
+    borderRadius: "8px",
+    fontSize: "16px",
+    cursor: "pointer"
 }

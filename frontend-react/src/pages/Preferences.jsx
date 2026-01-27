@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { api } from "../services/api"
 
@@ -10,19 +10,57 @@ export default function Preferences() {
         marital_status: "",
         has_kids: "no",
         income: "",
-        diseases: [],
-        bmi: ""
+        height: "",
+        weight: "",
+        diseases: []
     })
+    useEffect(() => {
+        async function loadExistingPreferences() {
+            const token = localStorage.getItem("token")
+            try {
+                const res = await api.get(`/user/me?token=${token}`)
+                const rp = res.data.risk_profile
+                if (!rp) return
 
-    // 🔢 RISK LEVEL CALCULATION
+                setForm({
+                    age: rp.age || "",
+                    income: rp.income || "",
+                    marital_status: rp.marital_status || "",
+                    has_kids: rp.has_kids ? "yes" : "no",
+                    height: rp.height || "",
+                    weight: rp.weight || "",
+                    diseases: rp.diseases || []
+                })
+
+                setPreferredTypes(rp.preferred_policy_types || [])
+                setMaxPremium(rp.max_premium || "")
+            } catch (err) {
+                console.error("Failed to load preferences", err)
+            }
+        }
+
+        loadExistingPreferences()
+    }, [])
+
+
+    // 🧮 BMI CALCULATION
+    const calculateBMI = () => {
+        if (!form.height || !form.weight) return null
+        const h = Number(form.height) / 100
+        const w = Number(form.weight)
+        return (w / (h * h)).toFixed(1)
+    }
+
+    const bmi = calculateBMI()
+
+    // 🔢 RISK LEVEL
     const calculateRiskLevel = () => {
         let score = 0
 
-        if (form.diseases.length >= 5) score += 3
+        if (form.diseases.length >= 4) score += 3
         else if (form.diseases.length >= 2) score += 2
         else score += 1
 
-        const bmi = parseFloat(form.bmi)
         if (bmi >= 30) score += 2
         else if (bmi >= 25) score += 1
 
@@ -30,178 +68,194 @@ export default function Preferences() {
         if (score >= 3) return "Medium"
         return "Low"
     }
+
     const [preferredTypes, setPreferredTypes] = useState([])
     const [maxPremium, setMaxPremium] = useState("")
 
 
     const handleSave = async () => {
-        const userId = localStorage.getItem("user_id")
         const token = localStorage.getItem("token")
 
         const payload = {
-            ...form,
+            age: Number(form.age),
+            income: Number(form.income),
+            marital_status: form.marital_status,
+            has_kids: form.has_kids === "yes",
+            height: Number(form.height),
+            weight: Number(form.weight),
+            bmi: Number(bmi),
+            diseases: form.diseases,
+            preferred_policy_types: preferredTypes,
+            max_premium: Number(maxPremium),
             risk_level: calculateRiskLevel()
         }
 
         try {
-            await api.post(
-                `/user/preferences?token=${token}`,
-                {
-                    age,
-                    income,
-                    marital_status,
-                    has_kids,
-                    bmi: Number(bmi),
-                    diseases,
-                    preferred_policy_types: preferredTypes,
-                    max_premium: Number(maxPremium)
-                }
-            )
+            const res = await fetch(`http://localhost:8000/user/preferences?token=${token}`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+            })
 
-            navigate("/recommendations")
+            if (!res.ok) {
+                const errText = await res.text()
+                throw new Error(`HTTP ${res.status}: ${errText}`)
+            }
+
+            localStorage.setItem("hasPreferences", "true")
+            alert("Preferences saved successfully ✅")
+
+            // Small delay to ensure backend has processed
+            setTimeout(() => {
+                navigate(`/recommendations?token=${token}`)
+            }, 500)
+
         } catch (err) {
             console.error("Save preferences failed", err)
-            alert("Failed to save preferences")
+            alert("Failed to save preferences ❌")
         }
     }
 
+
     return (
-        <div style={{
-            minHeight: "100vh",
-            background: "#f4f6f8",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            fontFamily: "Segoe UI, sans-serif"
-        }}>
-            <div style={{
-                width: "420px",
-                background: "#fff",
-                padding: "30px",
-                borderRadius: "12px",
-                boxShadow: "0 8px 20px rgba(0,0,0,0.15)"
-            }}>
-                <h2 style={{ color: "#1976D2", marginBottom: "20px" }}>
-                    User Preferences
-                </h2>
+        <div style={pageStyle}>
+            <div style={cardStyle}>
+                <h2 style={titleStyle}>👤 User Preferences</h2>
 
                 {/* BASIC DETAILS */}
-                <input
-                    placeholder="Age"
-                    type="number"
-                    value={form.age}
-                    onChange={e => setForm({ ...form, age: e.target.value })}
-                    style={inputStyle}
-                />
+                <section>
+                    <h3 style={sectionTitle}>Basic Details</h3>
 
-                <select
-                    value={form.marital_status}
-                    onChange={e => setForm({ ...form, marital_status: e.target.value })}
-                    style={inputStyle}
-                >
-                    <option value="">Marital Status</option>
-                    <option value="single">Single</option>
-                    <option value="married">Married</option>
-                </select>
+                    <input
+                        type="number"
+                        placeholder="Age"
+                        value={form.age}
+                        onChange={e => setForm({ ...form, age: e.target.value })}
+                        style={inputStyle}
+                    />
 
-                <select
-                    value={form.has_kids}
-                    onChange={e => setForm({ ...form, has_kids: e.target.value })}
-                    style={inputStyle}
-                >
-                    <option value="no">No Kids</option>
-                    <option value="yes">Has Kids</option>
-                </select>
+                    <select
+                        value={form.marital_status}
+                        onChange={e => setForm({ ...form, marital_status: e.target.value })}
+                        style={inputStyle}
+                    >
+                        <option value="">Marital Status</option>
+                        <option value="single">Single</option>
+                        <option value="married">Married</option>
+                    </select>
 
-                <input
-                    placeholder="Annual Income"
-                    type="number"
-                    value={form.income}
-                    onChange={e => setForm({ ...form, income: e.target.value })}
-                    style={inputStyle}
-                />
+                    <select
+                        value={form.has_kids}
+                        onChange={e => setForm({ ...form, has_kids: e.target.value })}
+                        style={inputStyle}
+                    >
+                        <option value="no">No Kids</option>
+                        <option value="yes">Has Kids</option>
+                    </select>
+
+                    <input
+                        type="number"
+                        placeholder="Annual Income (₹)"
+                        value={form.income}
+                        onChange={e => setForm({ ...form, income: e.target.value })}
+                        style={inputStyle}
+                    />
+                </section>
 
                 {/* HEALTH DETAILS */}
-                <h3 style={{ marginTop: "20px", color: "#333" }}>
-                    Health Details
-                </h3>
+                <section>
+                    <h3 style={sectionTitle}>❤️ Health Details</h3>
 
-                {["Diabetes", "BP", "Asthma", "Heart", "Thyroid"].map(d => (
-                    <label key={d} style={checkboxStyle}>
+                    <div style={{ display: "flex", gap: "10px" }}>
                         <input
-                            type="checkbox"
-                            checked={form.diseases.includes(d)}
-                            onChange={(e) => {
-                                setForm({
-                                    ...form,
-                                    diseases: e.target.checked
-                                        ? [...form.diseases, d]
-                                        : form.diseases.filter(x => x !== d)
-                                })
-                            }}
+                            type="number"
+                            placeholder="Height (cm)"
+                            value={form.height}
+                            onChange={e => setForm({ ...form, height: e.target.value })}
+                            style={inputStyle}
                         />
-                        <span>{d}</span>
-                    </label>
-                ))}
+                        <input
+                            type="number"
+                            placeholder="Weight (kg)"
+                            value={form.weight}
+                            onChange={e => setForm({ ...form, weight: e.target.value })}
+                            style={inputStyle}
+                        />
+                    </div>
 
-                <input
-                    placeholder="BMI (e.g. 23.5)"
-                    type="number"
-                    value={form.bmi}
-                    onChange={e => setForm({ ...form, bmi: e.target.value })}
-                    style={{ ...inputStyle, marginTop: "10px" }}
-                />
+                    {bmi && (
+                        <p style={{ color: "#0D47A1", fontWeight: 600 }}>
+                            BMI: {bmi}
+                        </p>
+                    )}
 
-                {/* RISK LEVEL DISPLAY */}
-                <p style={{
-                    marginTop: "15px",
-                    fontWeight: "600",
-                    color: "#1976D2"
-                }}>
-                    Risk Level: {calculateRiskLevel()}
-                </p>
-                <h3>Policy Preferences</h3>
-
-                <label>Preferred Insurance Types</label>
-                <div>
-                    {["health", "life", "auto", "home", "travel"].map(type => (
-                        <label key={type} style={{ marginRight: "10px", color: "#000" }}>
+                    {["Diabetes", "BP", "Asthma", "Heart", "Thyroid"].map(d => (
+                        <label key={d} style={checkboxStyle}>
                             <input
                                 type="checkbox"
-                                value={type}
+                                checked={form.diseases.includes(d)}
                                 onChange={(e) => {
-                                    if (e.target.checked) {
-                                        setPreferredTypes([...preferredTypes, type])
-                                    } else {
-                                        setPreferredTypes(preferredTypes.filter(t => t !== type))
-                                    }
+                                    setForm({
+                                        ...form,
+                                        diseases: e.target.checked
+                                            ? [...form.diseases, d]
+                                            : form.diseases.filter(x => x !== d)
+                                    })
                                 }}
-                            /> {type.toUpperCase()}
+                            />
+                            {d}
                         </label>
                     ))}
-                </div>
 
-                <label>Max Premium (₹)</label>
-                <input
-                    type="number"
-                    value={maxPremium}
-                    onChange={e => setMaxPremium(e.target.value)}
-                />
+                    <p style={{ fontWeight: 600, color: "#1976D2" }}>
+                        Risk Level: {calculateRiskLevel()}
+                    </p>
+                </section>
 
-                <button
-                    onClick={handleSave}
-                    style={{
-                        width: "100%",
-                        marginTop: "20px",
-                        padding: "12px",
-                        background: "#1976D2",
-                        color: "#fff",
-                        border: "none",
-                        borderRadius: "8px",
-                        fontSize: "16px",
-                        cursor: "pointer"
-                    }}
-                >
+                {/* POLICY PREFERENCES */}
+                <section>
+                    <h3 style={sectionTitle}>🛡️ Policy Preferences</h3>
+
+                    <div style={pillContainer}>
+                        {["health", "life", "auto", "home", "travel"].map(type => (
+                            <label key={type} style={pill}>
+                                <input
+                                    type="checkbox"
+                                    checked={preferredTypes.includes(type)}
+                                    onChange={(e) => {
+                                        setPreferredTypes(
+                                            e.target.checked
+                                                ? [...preferredTypes, type]
+                                                : preferredTypes.filter(t => t !== type)
+                                        )
+                                    }}
+                                />
+                                {type.toUpperCase()}
+                            </label>
+                        ))}
+                    </div>
+
+                    <label style={{ fontWeight: 600, color: "#333" }}>
+                        💰 Maximum Premium (₹)
+                    </label>
+
+                    <input
+                        type="number"
+                        placeholder="e.g. 15000"
+                        value={maxPremium}
+                        onChange={e => setMaxPremium(e.target.value)}
+                        style={{
+                            ...inputStyle,
+                            color: "#000",
+                            background: "#FFFDE7",
+                            border: "1px solid #FFD54F"
+                        }}
+                    />
+                </section>
+
+                <button onClick={handleSave} style={buttonStyle}>
                     Save Preferences
                 </button>
             </div>
@@ -209,20 +263,83 @@ export default function Preferences() {
     )
 }
 
+/* ---------------- STYLES ---------------- */
+
+const pageStyle = {
+    minHeight: "100vh",
+    background: "linear-gradient(135deg, #E3F2FD, #BBDEFB)",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center"
+}
+
+const cardStyle = {
+    width: "520px",
+    background: "#fff",
+    padding: "30px",
+    borderRadius: "16px",
+    boxShadow: "0 10px 25px rgba(0,0,0,0.2)"
+}
+
+const titleStyle = {
+    textAlign: "center",
+    color: "#0D47A1",
+    marginBottom: "20px"
+}
+
+const sectionTitle = {
+    color: "#1565C0",
+    borderBottom: "2px solid #E3F2FD",
+    paddingBottom: "5px",
+    marginTop: "20px"
+}
+
 const inputStyle = {
     width: "100%",
     padding: "10px",
     marginBottom: "10px",
-    borderRadius: "6px",
+    borderRadius: "8px",
     border: "1px solid #ccc",
-    fontSize: "14px"
+    fontSize: "14px",
+    color: "#000",
+    background: "#FAFAFA"
 }
 
 const checkboxStyle = {
     display: "flex",
+    gap: "8px",
     alignItems: "center",
+    marginBottom: "6px",
+    color: "#333"
+}
+
+const pillContainer = {
+    display: "flex",
+    flexWrap: "wrap",
     gap: "10px",
-    marginBottom: "8px",
-    color: "#333",
-    fontSize: "14px"
+    marginBottom: "15px"
+}
+
+const pill = {
+    background: "#E3F2FD",
+    padding: "8px 14px",
+    borderRadius: "20px",
+    fontSize: "13px",
+    color: "#0D47A1",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    cursor: "pointer"
+}
+
+const buttonStyle = {
+    width: "100%",
+    padding: "14px",
+    marginTop: "20px",
+    background: "#1976D2",
+    color: "#fff",
+    border: "none",
+    borderRadius: "10px",
+    fontSize: "16px",
+    cursor: "pointer"
 }
