@@ -40,22 +40,35 @@ def filter_policies(
     max_premium = preferences.get('max_premium')
     preferred_types = preferences.get('preferred_policy_types', [])
     
+    print(f"\n[DEBUG filter_policies]")
+    print(f"  User age: {age}")
+    print(f"  Preferred types from preferences dict: {preferred_types}")
+    print(f"  Type of preferred_types: {type(preferred_types)}")
+    print(f"  Max premium: {max_premium}")
+    print(f"  Risk profile: {risk_profile}")
+    
     # STEP 1: Age-based filtering
     # ============================
     allowed_by_age = []
     
-    if age < 15:
+    if age < 18:
         allowed_by_age = ['health']
     elif 15 <= age <= 45:
-        allowed_by_age = ['health', 'auto', 'home', 'travel']
+        allowed_by_age = ['health', 'auto', 'home', 'travel', 'life']  # Include life for all adults
     else:  # age > 45
         allowed_by_age = ['health', 'life']
+    
+    print(f"  Allowed by age ({age}): {allowed_by_age}")
     
     filtered = []
     for policy in policies:
         if policy.get('policy_type') in allowed_by_age:
             filtered.append(policy)
             filter_details['age_filtered'].append(policy.get('title', 'Unknown'))
+    
+    print(f"  After age filter: {len(filtered)} policies")
+    if preferred_types:
+        print(f"    Policies by type: {set(p.get('policy_type') for p in filtered)}")
     
     # STEP 2: Risk-based filtering
     # =============================
@@ -67,9 +80,13 @@ def filter_policies(
     # STEP 3: Preferred policy types filtering
     # ==========================================
     if preferred_types:
+        print(f"  Applying preferred types filter: {preferred_types}")
         # If user specified preferences, STRICTLY enforce them
         # Only include policies matching preferred types
+        before_pref = len(filtered)
         filtered = [p for p in filtered if p.get('policy_type') in preferred_types]
+        print(f"    Before: {before_pref}, After: {len(filtered)}")
+        print(f"    Filtered policies: {[p.get('title') for p in filtered]}")
         filter_details['preferred_type_filtered'] = [p.get('title', 'Unknown') for p in filtered]
     
     # STEP 4: Max premium filtering

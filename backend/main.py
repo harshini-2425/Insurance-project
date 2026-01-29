@@ -123,7 +123,7 @@ def list_policies(
     min_premium: Decimal = Query(None),
     max_premium: Decimal = Query(None),
     skip: int = Query(0),
-    limit: int = Query(10),
+    limit: int = Query(100),
     db: Session = Depends(get_db)
 ):
     """List all policies with optional filters"""
@@ -307,9 +307,17 @@ def save_preferences(data: dict, token: str = Query(...), db: Session = Depends(
         try:
             risk_profile = risk  # Use calculated risk_profile
             # Get preferences from the stored risk_profile dict
+            preferred_types = user.risk_profile.get('preferred_policy_types', [])
+            max_premium = user.risk_profile.get('max_premium')
+            
+            print(f"\n[DEBUG] Preferences received:")
+            print(f"  - preferred_policy_types from data: {data.get('preferred_policy_types', [])}")
+            print(f"  - preferred_policy_types from risk_profile: {preferred_types}")
+            print(f"  - max_premium: {max_premium}")
+            
             preferences = {
-                'preferred_policy_types': user.risk_profile.get('preferred_policy_types', []),
-                'max_premium': user.risk_profile.get('max_premium')
+                'preferred_policy_types': preferred_types,
+                'max_premium': max_premium
             }
             
             # Build full user data for comprehensive scoring
@@ -804,6 +812,11 @@ def submit_claim(
         "claim_number": claim.claim_number,
         "status": claim.status
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 

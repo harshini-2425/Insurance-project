@@ -44,7 +44,7 @@ class Policy(Base):
     
     id = Column(Integer, primary_key=True)
     provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False)
-    policy_type = Column(SQLEnum(PolicyTypeEnum), nullable=False)
+    policy_type = Column(SQLEnum(PolicyTypeEnum, native_enum=False), nullable=False)
     title = Column(String, nullable=False)
     coverage = Column(JSON, nullable=True)
     premium = Column(Numeric(10, 2), nullable=False)
