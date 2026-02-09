@@ -361,7 +361,7 @@ export default function ComparePolicies() {
                                     e.target.style.boxShadow = "0 4px 12px rgba(76, 175, 80, 0.3)";
                                 }}
                             >
-                                💼 Choose {policy.title}
+                                💼 View Details
                             </button>
                         ))}
                     </div>

@@ -4,7 +4,10 @@ import Register from './pages/Register'
 import Profile from './pages/Profile'
 import BrowsePolicies from './pages/BrowsePolicies'
 import ComparePolicies from './pages/ComparePolicies'
-import Claims from './pages/Claims'
+import PolicyDetails from './pages/PolicyDetails'
+import ApplyInsurance from './pages/ApplyInsurance'
+import ClaimsPage from './pages/Claims'
+import FraudMonitoring from './pages/FraudMonitoring'
 import Header from './components/Header'
 import './App.css'
 import Preferences from "./pages/Preferences";
@@ -22,6 +25,8 @@ function App() {
         <Route path="/profile" element={<Profile />} />
         <Route path="/browse" element={<BrowsePolicies />} />
         <Route path="/compare" element={<ComparePolicies />} />
+        <Route path="/policy/:policyId" element={<PolicyDetails />} />
+        <Route path="/apply/:policyId" element={<ApplyInsurance />} />
         <Route path="/preferences" element={<Preferences />} />
         <Route path="/recommendations" element={<Recommendations />} />
         <Route
@@ -32,7 +37,8 @@ function App() {
             </ProtectedRecommendations>
           }
         />
-        <Route path="/claims" element={<Claims />} />
+        <Route path="/claims" element={<ClaimsPage />} />
+        <Route path="/fraud" element={<FraudMonitoring />} />
 
       </Routes>
     </Router>

@@ -39,7 +39,9 @@ export default function BrowsePolicies() {
             const res = await fetch(url);
             if (!res.ok) throw new Error("Failed to fetch policies");
             const data = await res.json();
-            setPolicies(data);
+            // Extract policies from paginated response
+            const policiesList = data.policies || data || [];
+            setPolicies(policiesList);
             setError("");
         } catch (err) {
             setError("Error loading policies: " + err.message);

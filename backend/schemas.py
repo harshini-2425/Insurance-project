@@ -79,7 +79,7 @@ class PolicyWithProvider(PolicyOut):
 
 class UserPolicyCreate(BaseModel):
     policy_id: int
-    policy_number: str
+    policy_number: Optional[str] = None
     start_date: date
     end_date: date
     premium: Decimal

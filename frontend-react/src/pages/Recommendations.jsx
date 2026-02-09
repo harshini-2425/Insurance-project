@@ -376,7 +376,7 @@ export default function Recommendations() {
                                         marginTop: "15px"
                                     }}>
                                         <button
-                                            onClick={() => navigate(`/compare?ids=${rec.policy_id}`)}
+                                            onClick={() => navigate(`/policy/${rec.policy_id}`)}
                                             style={{
                                                 flex: 1,
                                                 padding: "12px",

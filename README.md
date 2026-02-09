@@ -1,958 +1,634 @@
-# 🛡️ Insurance Platform - Complete Technical Documentation
+# Insurance Policy Recommendation & Claims Management Platform
 
-A full-stack intelligent insurance comparison and recommendation system with fraud detection and claims management.
+**Status**: ✅ Complete | Production-Ready  
+**Version**: 1.0  
+**Last Updated**: February 2026
 
-**Status**: ✅ PRODUCTION READY | **Version**: 1.0.0 | **Updated**: January 2026
+A comprehensive full-stack insurance platform with intelligent policy recommendations, fraud detection, and end-to-end claims management. Designed for academic and commercial deployment.
 
 ---
 
 ## 📋 Table of Contents
 
-1. [System Architecture](#system-architecture)
-2. [Data Flow Workflow](#data-flow-workflow)
-3. [Recommendation Algorithm](#recommendation-algorithm)
-4. [Technical Implementation](#technical-implementation)
-5. [Quick Start Guide](#quick-start-guide)
-6. [API Reference](#api-reference)
+1. [Project Overview](#project-overview)
+2. [System Architecture](#system-architecture)
+3. [Key Features](#key-features)
+4. [Technology Stack](#technology-stack)
+5. [Installation & Setup](#installation--setup)
+6. [Database Schema](#database-schema)
+7. [API Documentation](#api-documentation)
+8. [Workflow Guide](#workflow-guide)
+9. [Recommendation Engine](#recommendation-engine)
+10. [Fraud Detection System](#fraud-detection-system)
+11. [API Examples](#api-examples)
+12. [Project Structure](#project-structure)
+
+---
+
+## Project Overview
+
+This platform provides a complete solution for insurance policy management:
+
+- **Intelligent Recommendations**: Two-stage filtering (strict policy-type first, then soft scoring)
+- **Policy Comparison**: Browse 50+ realistic policies from 30 real insurance companies
+- **Claims Management**: End-to-end workflow from claim creation to payout
+- **Fraud Detection**: 8 built-in fraud detection rules with risk scoring (0-100)
+- **User Authentication**: Secure JWT-based authentication with 30-day expiry
+- **Email Notifications**: Automated emails for claims and policy updates
+- **Responsive UI**: Mobile-friendly React frontend with clear user workflows
+
+**Target Users**:
+- Insurance consumers seeking policy recommendations
+- Insurance companies managing policies and claims
+- Academic institutions studying insurance platforms
 
 ---
 
 ## System Architecture
 
-### 🏗️ High-Level Architecture
-
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    FRONTEND LAYER                            │
-│  React 19.2.0 + Vite 7.3.1 @ port 5174                     │
-│  ├─ Pages: Register, Login, Browse, Preferences, Recommend  │
-│  ├─ Components: Policy Cards, Filters, Recommendations      │
-│  └─ State: localStorage (token, preferences, user data)     │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ HTTP/REST (JSON)
-                               ↓
+│                    FRONTEND (React + Vite)                    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+│  │ Auth     │ │ Browse   │ │ Policy   │ │ Claims & Fraud   │ │
+│  │ Pages    │ │ Policies │ │ Details  │ │ Detection        │ │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────────────┘ │
+└──────────────────────────────────────────────────────────────┘
+                          ↕↕ (REST API)
 ┌──────────────────────────────────────────────────────────────┐
-│                    BACKEND LAYER                             │
-│  FastAPI + Uvicorn @ port 8000                              │
-│  ├─ Auth Module: JWT tokens (60-min expiration)            │
-│  ├─ Policy Module: CRUD operations, browsing                │
-│  ├─ Recommendation Module: Intelligent scoring & filtering   │
-│  ├─ Claims Module: Submission, tracking, fraud detection    │
-│  └─ Security: Password hashing, token validation            │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ SQLAlchemy ORM
-                               ↓
+│               BACKEND (FastAPI + SQLAlchemy)                  │
+│  ┌────────────────────┐  ┌──────────────────┐ ┌────────────┐ │
+│  │ Authentication     │  │ Recommendation   │ │ Claims     │ │
+│  │ & Authorization    │  │ Engine (2-Stage) │ │ Management │ │
+│  └────────────────────┘  └──────────────────┘ └────────────┘ │
+│  ┌────────────────────┐  ┌──────────────────┐ ┌────────────┐ │
+│  │ Fraud Detection    │  │ Email Service    │ │ Admin APIs │ │
+│  │ (8 Rules)          │  │ (Notifications)  │ │            │ │
+│  └────────────────────┘  └──────────────────┘ └────────────┘ │
+└──────────────────────────────────────────────────────────────┘
+                      ↕↕ (SQLAlchemy ORM)
 ┌──────────────────────────────────────────────────────────────┐
-│                    DATABASE LAYER                            │
-│  PostgreSQL @ localhost:5432                                 │
-│  ├─ users: 6 fields (id, name, email, password, dob, risk)│
-│  ├─ providers: 3 fields (id, name, country)                │
-│  ├─ policies: 8 fields (id, provider_id, type, title, etc) │
-│  ├─ user_policies: Purchased policies with dates            │
-│  ├─ recommendations: Score, reason, timestamp               │
-│  ├─ claims: Claim details, status, amounts                  │
-│  ├─ claim_documents: File references, doc types             │
-│  └─ fraud_flags: Suspicious activity tracking               │
+│               DATABASE (SQLite/PostgreSQL)                     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+│  │ Users    │ │ Policies │ │ Claims   │ │ Fraud Detection  │ │
+│  │ & Auth   │ │ & Quotes │ │ & Docs   │ │ Scores & Rules   │ │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 📊 Database Schema (8 Tables)
+---
 
-| Table | Purpose | Key Fields |
-|-------|---------|-----------|
-| **users** | User accounts | id, name, email, password_hash, dob, risk_profile (JSON) |
-| **providers** | Insurance companies | id, name, country |
-| **policies** | Insurance products | id, provider_id, policy_type, title, premium, coverage (JSON), term_months, deductible |
-| **user_policies** | Purchased policies | id, user_id, policy_id, policy_number, start/end dates, premium, auto_renew |
-| **recommendations** | AI recommendations | id, user_id, policy_id, score (0-100), reason, created_at |
-| **claims** | Insurance claims | id, user_policy_id, claim_number, type, incident_date, amount_claimed, status, description |
-| **claim_documents** | Claim attachments | id, claim_id, file_url, doc_type, uploaded_at |
-| **fraud_flags** | Fraud detection | id, claim_id, flag_type, confidence_score, details |
+## Key Features
 
-### 🔐 Authentication Flow
+### 1. **Authentication & User Management**
+- User registration with email and password
+- Secure JWT-based authentication (30-day expiry)
+- User profile management with health and demographic data
+- Risk profile assessment (conservative/moderate/aggressive)
+- Password hashing with bcrypt
 
-```
-User Registration/Login
-        │
-        ↓
-Validate email/password
-        │
-        ├─→ Hash password (bcrypt)
-        ├─→ Store in database
-        │
-        ↓
-Generate JWT Token
-        │
-        ├─→ User ID + expiration (60 min)
-        ├─→ Signed with HS256 algorithm
-        │
-        ↓
-Return token to frontend
-        │
-        └─→ Stored in localStorage
-        └─→ Sent in all subsequent requests as query param
-```
+### 2. **Policy Browsing & Comparison**
+- **50+ Realistic Policies** from 30 insurance companies:
+  - Life: LIC, HDFC Life, ICICI Prudential, Tata AIG, Bajaj Allianz, MetLife
+  - Health: Star Health, Aditya Birla, Apollo Munich, ICICI Lombard, Bajaj Allianz
+  - Auto: HDFC Ergo, ICICI Lombard, Bajaj, Tata AIG, Royal Sundaram, Oriental, New India
+  - Home: HDFC Ergo, ICICI Lombard, Bajaj, Tata AIG, Royal Sundaram, Kotak, Cholamandalam
+  - Travel: Cholamandalam, ICICI Lombard, Bajaj, HDFC Ergo, AIG, AXA
+- Advanced filtering: price range, provider, coverage
+- Full-text search in policy titles and descriptions
+- Pagination support (up to 100 policies per request)
+- Policy comparison view
+
+### 3. **Intelligent Recommendation Engine**
+
+**Two-Stage Process**:
+
+**Stage 1 (STRICT)**: Filter policies by user-selected policy type
+- If user selects ["health", "life"]: Only show health and life policies
+- Hard constraint: No other policy types shown
+- Eliminates 60-80% of policies immediately
+
+**Stage 2 (SOFT)**: Score remaining policies using 5 weighted factors
+- Not a removal stage - all policies shown, just ranked
+- Scores range from 0-100
+- Uses composite scoring instead of hard removal
+
+**Scoring Factors**:
+1. **Coverage Matching** (35%): Does policy cover user's needs?
+2. **Premium Affordability** (25%): Within user's budget?
+3. **Health & Risk Alignment** (25%): Suits user's health profile?
+4. **Policy Type Fit** (10%): How suitable for user's situation?
+5. **Provider Rating** (5%): Provider reputation
+
+**Returns**: Top 5-10 recommendations with human-readable explanations
+
+### 4. **Claims Management Workflow**
+- **Step 1**: Create claim with policy selection and incident details
+- **Step 2**: Upload required documents (auto-validated by claim type)
+- **Step 3**: Submit claim for review
+- **Tracking**: View claim status and history
+- **Document Types**: 13 different claim document types
+- **Status Tracking**: Draft → Submitted → Under Review → Approved/Rejected → Paid
+
+### 5. **Fraud Detection System**
+- **8 Built-in Rules**:
+  1. Duplicate claims within 30 days
+  2. Multiple claims from same user in 24 hours
+  3. Claim amount exceeds policy coverage
+  4. Suspicious timing (claim within 7 days of purchase)
+  5. Document quality issues (missing or suspicious)
+  6. Unusual claim patterns (high-value anomalies)
+  7. Policy status validation
+  8. User verification checks
+- **Risk Scoring**: 0-100 scale with detailed reasoning
+- **Auto-flagged Claims**: High-risk claims flagged for manual review
+
+### 6. **Email Notifications**
+- Claim submission confirmation
+- Claim status updates
+- Approval/rejection notifications
+- Policy purchase confirmations
+
+### 7. **Admin Features**
+- Manage policies and providers
+- View system statistics
+- Monitor fraud detection alerts
+- Track claims by status
 
 ---
 
-## Data Flow Workflow
+## Technology Stack
 
-### 📝 Complete User Journey: Registration to Recommendations
+### Frontend
+- **React 18** with Hooks for state management
+- **Vite 7.3** for fast development and builds
+- **React Router** for navigation
+- **CSS3** for responsive design
+- **Local Storage** for session management
 
-```
-STEP 1: USER REGISTRATION
-──────────────────────────
-Frontend Request:
-  POST /auth/register
-  Body: {name, email, password, dob}
-  
-Backend Process:
-  1. Validate all fields required
-  2. Check if email already exists
-  3. Hash password using bcrypt
-  4. Create User record in database
-  5. Generate JWT token
-  
-Response: {access_token, user_id, user_data}
+### Backend
+- **FastAPI** (Python web framework)
+- **SQLAlchemy 2.0** (ORM)
+- **Pydantic** (data validation)
+- **JWT** (JWT-based authentication)
+- **Python-multipart** (file upload handling)
+- **SQLite** (development) / **PostgreSQL** (production)
 
-
-STEP 2: USER LOGIN
-──────────────────
-Frontend Request:
-  POST /auth/login
-  Body: {email, password}
-  
-Backend Process:
-  1. Find user by email
-  2. Verify password hash
-  3. Generate new JWT token
-  
-Response: {access_token, user_id, user_data}
-
-
-STEP 3: BROWSE POLICIES (OPTIONAL)
-───────────────────────────────────
-Frontend Request:
-  GET /policies?policy_type=health&max_premium=500&limit=100
-  
-Backend Process:
-  1. Query all policies with filters
-  2. Apply policy_type filter (if provided)
-  3. Apply premium range filter
-  4. Limit results to 100 (showing all available)
-  
-Response: [
-  {id, title, premium, coverage, policy_type, provider_id},
-  ...18 total policies...
-]
-
-
-STEP 4: SET USER PREFERENCES & GET RECOMMENDATIONS
-──────────────────────────────────────────────────
-Frontend Request:
-  POST /user/preferences?token={JWT_TOKEN}
-  Body: {
-    age: 50,
-    income: 100000,
-    bmi: 22,
-    diseases: [],
-    height: 180,
-    weight: 70,
-    marital_status: "married",
-    has_kids: true,
-    preferred_policy_types: ["life"],  ← USER'S INSURANCE TYPE PREFERENCE
-    max_premium: 500
-  }
-  
-Backend Process (AUTO-GENERATION):
-  
-  1. EXTRACT USER DATA
-     ├─ Demographics: age, income, marital_status, has_kids
-     ├─ Health: bmi, diseases, height, weight
-     └─ Preferences: preferred_policy_types, max_premium
-  
-  2. CALCULATE RISK PROFILE
-     ├─ Rule: diseases >= 4 OR bmi >= 30 → "high"
-     ├─ Rule: diseases >= 2 OR bmi >= 25 → "medium"
-     └─ Rule: else → "low"
-     Example: age 50, 0 diseases, bmi 22 → Risk = "low"
-  
-  3. APPLY STRICT FILTERING (4-stage process)
-     See detailed section below
-  
-  4. SCORE REMAINING POLICIES (5-factor algorithm)
-     See detailed section below
-  
-  5. SAVE RECOMMENDATIONS TO DATABASE
-     ├─ Clear previous recommendations
-     ├─ Create new Recommendation records
-     └─ Include score and recommendation reason
-  
-Response: {message, recommendations_generated: true}
-
-
-STEP 5: RETRIEVE RECOMMENDATIONS
-─────────────────────────────────
-Frontend Request:
-  GET /recommendations?token={JWT_TOKEN}
-  
-Backend Process:
-  1. Get user's saved recommendations (sorted by score DESC)
-  2. Join with Policy details
-  3. Include provider information
-  
-Response: [
-  {
-    id: 1,
-    policy_id: 15,
-    score: 85.44,
-    reason: "Excellent coverage match • Within budget (₹28.0) • Matches low profile",
-    policy: {
-      id: 15,
-      title: "Budget Term Life 15-Year",
-      premium: 28,
-      policy_type: "life",
-      coverage: {...},
-      provider: {id: 2, name: "Guardian Life"}
-    }
-  },
-  ...more policies...
-]
-
-
-STEP 6: PURCHASE POLICY (OPTIONAL)
-───────────────────────────────────
-Frontend Request:
-  POST /user-policies
-  Body: {policy_id, start_date, end_date, auto_renew}
-  
-Backend Process:
-  1. Verify policy exists
-  2. Generate unique policy number
-  3. Create UserPolicy record
-  
-Response: {id, policy_number, status: "active"}
-
-
-STEP 7: FILE CLAIM (OPTIONAL)
-──────────────────────────────
-Frontend Request:
-  POST /claims
-  Body: {user_policy_id, claim_type, incident_date, amount_claimed, description}
-  
-Backend Process:
-  1. Verify user owns the policy
-  2. Generate unique claim number
-  3. Create Claim record (status: "draft")
-  
-Response: {id, claim_number, status}
-
-
-STEP 8: SUBMIT CLAIM
-────────────────────
-Frontend Request:
-  PUT /claims/{claim_id}/submit
-  
-Backend Process:
-  1. Verify ownership and status = "draft"
-  2. Update status to "submitted"
-  3. Run fraud detection algorithms
-  
-Response: {message, claim_number, status: "submitted"}
-```
+### Database
+- **13 normalized tables**
+- **SQLAlchemy** ORM with type hints
+- Ready for PostgreSQL migration
 
 ---
 
-## Recommendation Algorithm
+## Installation & Setup
 
-### 🎯 ALGORITHM OVERVIEW
+### Prerequisites
+- Python 3.10+ with pip and venv
+- Node.js 16+ with npm
+- Git
 
-The recommendation system uses **4-Stage Filtering + 5-Factor Scoring** to intelligently match users with appropriate insurance policies.
-
-```
-                    18 Available Policies
-                            │
-                            ↓
-                ┌─────────────────────────┐
-                │  STAGE 1: AGE FILTERING │
-                └────────────┬────────────┘
-                             │
-                    Apply age-based rules
-                             │
-                             ↓
-        Policies matching age eligibility
-                             │
-                ┌────────────────────────┐
-                │ STAGE 2: RISK FILTERING│
-                └────────────┬───────────┘
-                             │
-           If high risk: health only
-           Otherwise: no change
-                             │
-                             ↓
-        Policies after risk filtering
-                             │
-        ┌──────────────────────────────────┐
-        │ STAGE 3: PREFERENCE FILTERING    │
-        └────────────┬────────────────────┘
-                     │
-      If preferred_policy_types specified:
-      Keep ONLY matching types
-                     │
-                     ↓
-          Policies matching user preference
-                     │
-        ┌────────────────────────────┐
-        │ STAGE 4: BUDGET FILTERING  │
-        └────────────┬───────────────┘
-                     │
-          Keep policies <= max_premium
-                     │
-                     ↓
-            Policies within budget
-                     │
-        ┌────────────────────────────┐
-        │ SCORE 5-FACTOR ALGORITHM   │
-        └────────────┬───────────────┘
-                     │
-    Calculate score for each remaining policy
-                     │
-                     ↓
-              RANKED RECOMMENDATIONS
-```
-
-### 🔍 STAGE 1: AGE-BASED FILTERING
-
-| Age Range | Allowed Policy Types |
-|-----------|-------------------|
-| **< 15** | health |
-| **15-45** | health, auto, home, travel, life |
-| **> 45** | health, life |
-
-Example: Age 34 → Allowed: [health, auto, home, travel, life]
-
-### 🛡️ STAGE 2: RISK PROFILE FILTERING
-
-Risk calculated as:
-```
-if (diseases >= 4) OR (BMI >= 30) → "high"
-if (diseases >= 2) OR (BMI >= 25) → "medium"
-else → "low"
-```
-
-Filtering: High risk users → health only. Others → no change.
-
-### 🎁 STAGE 3: PREFERENCE FILTERING
-
-If user specifies `preferred_policy_types`, keep ONLY those types.
-
-Example: preferred_policy_types=['life'] → Keep only life policies
-
-### 💰 STAGE 4: BUDGET FILTERING
-
-Keep policies where `premium <= max_premium`.
-
-### ⭐ STAGE 5: 5-FACTOR SCORING
-
-For each policy that passed all filters:
-
-```
-TOTAL SCORE = 
-  Factor 1 (Coverage Match):      35 points max
-  + Factor 2 (Premium Affordability): 25 points max
-  + Factor 3 (Health Alignment):   25 points max
-  + Factor 4 (Type Fit):          10 points max
-  + Factor 5 (Provider Rating):    5 points max
-  ────────────────────────────────
-  = TOTAL (max 100 points)
-```
-
-**Factor 1 (Coverage)**: How well policy coverage matches user needs  
-**Factor 2 (Affordability)**: Premium as % of user income  
-**Factor 3 (Health)**: Alignment with risk profile  
-**Factor 4 (Type Fit)**: How relevant policy type is to user  
-**Factor 5 (Provider)**: Company reputation and rating  
-
-### 📊 REAL EXAMPLE
-
-**User**:
-- Age: 34, Income: ₹1,000,000, BMI: 21.1, Diseases: 0
-- Preferred: ["life"], Max Premium: ₹34,000,000
-
-**Process**:
-1. **Age 34 Filter**: Allowed [health, auto, home, travel, life] → 8 policies
-2. **Risk "low" Filter**: No filtering → 8 policies
-3. **Preference ["life"] Filter**: Keep only life → 4 policies
-4. **Budget ₹34M Filter**: All 4 under budget → 4 policies
-5. **Score 5 Factors**: 
-   - Budget Term Life 15-Year: 85.44/100
-   - Term Life 20-Year: 85.10/100
-   - Whole Life Forever: 83.00/100
-   - Lifetime Wealth Builder: 78.00/100
-
-**Result**: 4 recommendations returned ✅
-
----
-
-## Technical Implementation
-
-### 🛠️ Backend Technology Stack
-
-| Component | Technology | Version |
-|-----------|-----------|---------|
-| **Framework** | FastAPI | 0.104.1+ |
-| **Server** | Uvicorn | 0.24.0+ |
-| **Database** | PostgreSQL | 14+ |
-| **ORM** | SQLAlchemy | 2.0+ |
-| **Auth** | Python-Jose (JWT) | 3.3.0+ |
-| **Validation** | Pydantic | 2.0+ |
-
-### 🎨 Frontend Technology Stack
-
-| Component | Technology | Version |
-|-----------|-----------|---------|
-| **Framework** | React | 19.2.0 |
-| **Build Tool** | Vite | 7.3.1 |
-| **Router** | React Router | 7.8.2 |
-| **HTTP Client** | Fetch API | Built-in |
-| **Styling** | Inline CSS | Custom |
-
-### 📁 Project Structure
-
-```
-c:\newproject\
-├── backend/
-│   ├── main.py              # FastAPI app, all endpoints
-│   ├── models.py            # SQLAlchemy ORM models
-│   ├── schemas.py           # Pydantic validation schemas
-│   ├── auth.py              # JWT token & password hashing
-│   ├── database.py          # PostgreSQL connection
-│   ├── deps.py              # Dependency injection
-│   ├── scoring.py           # Recommendation algorithm
-│   ├── seed_data.py         # Database initialization
-│   └── requirements.txt      # Python dependencies
-│
-├── frontend-react/
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── Register.jsx
-│   │   │   ├── Login.jsx
-│   │   │   ├── Browse.jsx
-│   │   │   ├── Preferences.jsx
-│   │   │   ├── Recommendations.jsx
-│   │   │   └── Claims.jsx
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   ├── package.json
-│   └── vite.config.js
-│
-└── README.md                # This file
-```
-
-### 🔑 Key Implementation Details
-
-**Filtering (scoring.py lines 9-88)**:
-- 4-stage strict filtering ensures correct policies matched
-- Each stage can eliminate policies
-- Only policies passing ALL stages get scored
-
-**Scoring (scoring.py lines 90-180)**:
-- 5 independent scoring factors
-- Each factor 0-1 scale, multiplied by max points
-- Final score: 0-100 range
-- Higher score = better match
-
-**Database (models.py)**:
-- 8 tables with proper relationships
-- JSON columns for flexible coverage storage
-- Decimal type for accurate currency
-
-**Authentication (main.py & auth.py)**:
-- JWT tokens: 60-minute expiration
-- Token sent in query param: `?token=JWT_VALUE`
-- Validated on every protected endpoint
-
----
-
-## Quick Start Guide
-
-### 📥 Installation
+### Backend Setup
 
 ```bash
-# 1. Clone repository
-cd c:\newproject
-
-# 2. Create virtual environment
-python -m venv .venv
-.\.venv\Scripts\activate
-
-# 3. Install backend dependencies
+# Navigate to backend directory
 cd backend
+
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 
-# 4. Setup PostgreSQL
-createdb insurance_db
+# Install python-multipart for file uploads
+pip install python-multipart
 
-# 5. Seed database
-python seed_data.py
+# Seed database with 50+ policies
+python seed_policies.py
+
+# Run backend server
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 🚀 Running the System
+Backend will be available at:
+- Application: `http://localhost:8000`
+- Swagger API Docs: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
-**Terminal 1 - Backend**:
-```bash
-cd backend
-python main.py
-# Runs on http://0.0.0.0:8000
-```
+### Frontend Setup
 
-**Terminal 2 - Frontend**:
 ```bash
+# Navigate to frontend directory
 cd frontend-react
-npm install
-npm run dev
-# Runs on http://localhost:5174
-```
-
-### ✅ Verification
-
-```bash
-# In terminal, test API
-curl http://localhost:8000/health
-# Response: {"status":"ok"}
-
-# Frontend should be accessible at
-http://localhost:5174
-```
-
----
-
-## API Reference
-
-### Authentication
-
-#### Register User
-```
-POST /auth/register
-Body: {name, email, password, dob}
-Response: {access_token, user_id, user_data}
-```
-
-#### Login User
-```
-POST /auth/login
-Body: {email, password}
-Response: {access_token, user_id, user_data}
-```
-
-### Policies
-
-#### List All Policies
-```
-GET /policies?policy_type=life&max_premium=500&limit=100&token=JWT
-Response: [{id, title, premium, policy_type, coverage, provider}, ...]
-```
-
-#### Get Policy Details
-```
-GET /policies/{policy_id}?token=JWT
-Response: {id, title, premium, policy_type, coverage, provider}
-```
-
-#### Compare Policies
-```
-GET /policies/compare?policy_ids=1,2,3&token=JWT
-Response: [{...policy1}, {...policy2}, {...policy3}]
-```
-
-### Preferences & Recommendations
-
-#### Save Preferences (Auto-generates recommendations)
-```
-POST /user/preferences?token=JWT
-Body: {
-  age, income, bmi, diseases, height, weight,
-  marital_status, has_kids,
-  preferred_policy_types, max_premium
-}
-Response: {message, recommendations_generated: true}
-```
-
-#### Get Recommendations
-```
-GET /recommendations?token=JWT
-Response: [{id, policy_id, score, reason, policy: {...}}, ...]
-```
-
-### Claims
-
-#### Create Claim
-```
-POST /claims?token=JWT
-Body: {user_policy_id, claim_type, incident_date, amount_claimed, description}
-Response: {id, claim_number, status: "draft"}
-```
-
-#### Submit Claim
-```
-PUT /claims/{claim_id}/submit?token=JWT
-Response: {message, claim_number, status: "submitted"}
-```
-
-#### Get User Claims
-```
-GET /claims?token=JWT&status=submitted
-Response: [{id, claim_number, status, policy, amount_claimed}, ...]
-```
-
----
-
-## 📈 Performance Metrics
-
-- **Recommendation Generation**: < 100ms
-- **Policy Filtering**: < 50ms per stage
-- **Scoring Algorithm**: < 5ms per policy
-- **Database Queries**: < 20ms per query
-
-## 🔒 Security Features
-
-- ✅ Password hashing (bcrypt)
-- ✅ JWT token authentication
-- ✅ SQL injection prevention (SQLAlchemy ORM)
-- ✅ CORS configuration
-- ✅ Request validation (Pydantic)
-- ✅ Error handling (no info leakage)
-
-## 📝 Data Privacy
-
-- Personal data: Not shared with third parties
-- Preferences: Encrypted in database
-- Claims: Audit trail maintained
-- Fraud detection: Anonymized flagging
-
----
-
-**Created**: January 2026 | **Version**: 1.0.0 | **Status**: Production Ready
-
-# Start server
-python -m uvicorn main:app --reload --port 8000
-```
-
-Server runs on: **http://localhost:8000**
-
-### 3. Frontend Setup
-```bash
-cd c:\newproject\frontend-react
 
 # Install dependencies
 npm install
 
-# Start development server
+# Run development server
 npm run dev
 ```
 
-App runs on: **http://localhost:5174**
+Frontend will be available at: `http://localhost:5173` (or `http://localhost:5174` if 5173 is in use)
 
 ---
 
-## 🎯 Features Implemented
+## Database Schema
 
-### ✅ Authentication (Module A)
-- **Register**: Create new user account with email, password, DOB
-- **Login**: Authenticate with email/password
-- **JWT Tokens**: 60-minute expiration with HS256 algorithm
-- **Password Security**: Argon2 hashing (no byte limits)
+### Core Tables
 
-### ✅ Policy Catalog (Module B)
-- **Browse**: View all insurance policies with details
-- **Filter**: By policy type, premium range
-- **Compare**: Side-by-side comparison of multiple policies
-- **Details**: View full coverage information for each policy
+**Users**
+- id, email, password_hash, name, date_of_birth
+- risk_profile (JSON: age, income, bmi, diseases, preferences)
+- created_at, updated_at
 
-### Available Policy Types
-- **Auto**: Vehicle insurance
-- **Health**: Medical coverage
-- **Life**: Term and Whole Life
-- **Home**: Property and liability
-- **Travel**: Trip and emergency coverage
+**Policies**
+- id, title, policy_type, provider_id, premium, coverage_amount
+- term_months, coverage (JSON), description, created_at
+
+**Providers**
+- id, name, policy_type, country
+
+**UserPolicies** (Purchased Policies)
+- id, user_id, policy_id, policy_number, status, purchase_date
+- maturity_date, premium_paid, coverage_amount
+
+**Claims**
+- id, user_policy_id, claim_type, incident_date, amount_claimed
+- description, status, claim_number, created_at, submitted_at
+
+**ClaimDocuments**
+- id, claim_id, file_url, doc_type, uploaded_at
+
+**Recommendations**
+- id, user_id, policy_id, score, reason, created_at
+
+**FraudDetection**
+- id, claim_id, rule_triggered, risk_score, reasoning, created_at
+
+**Notifications**
+- id, user_id, type, title, message, read, created_at
 
 ---
 
-## 📡 API Endpoints
+## Workflow Guide
+
+### User Workflow
+
+```
+1. AUTHENTICATION
+   ├─ Register with email & password
+   ├─ Login to get JWT token
+   └─ Set risk profile (age, health, preferences)
+
+2. BROWSE POLICIES
+   ├─ View 50+ available policies
+   ├─ Filter by type, price, provider
+   ├─ Search by title or description
+   └─ Compare multiple policies
+
+3. GET RECOMMENDATIONS
+   ├─ Select preferred policy types (STRICT FILTER)
+   ├─ Set budget (max premium)
+   ├─ System generates 5-10 recommendations
+   └─ View reasoning behind each recommendation
+
+4. PURCHASE POLICY
+   ├─ Create purchase application
+   ├─ Review policy terms
+   ├─ Confirm purchase
+   └─ Receive confirmation email
+
+5. SUBMIT CLAIM
+   ├─ Initiate claim for purchased policy
+   ├─ Enter incident details
+   ├─ Upload required documents
+   ├─ System checks for fraud (8 rules)
+   ├─ Submit for review
+   └─ Track claim status
+
+6. RECEIVE PAYOUT
+   ├─ Claim undergoes manual review
+   ├─ Claim approved or rejected
+   ├─ Receive notification
+   └─ (If approved) Payout processed
+```
+
+---
+
+## Recommendation Engine
+
+### Core Algorithm
+
+The recommendation engine implements a **two-stage process**:
+
+#### Stage 1: Strict Policy-Type Filtering
+```python
+# HARD CONSTRAINT: Filter by user-selected policy type
+User selects: ["health", "life"]
+Result: Only health and life policies shown
+Elimination: ~60-80% of policies removed
+```
+
+#### Stage 2: Soft Constraint Scoring
+```python
+# Remaining policies scored on 5 factors (no removal)
+Coverage Matching: 0-35 points (35% weight)
+Premium Affordability: 0-25 points (25% weight)
+Health & Risk Alignment: 0-25 points (25% weight)
+Policy Type Fit: 0-10 points (10% weight)
+Provider Rating: 0-5 points (5% weight)
+─────────────────────────
+Total Score: 0-100 points
+
+Return: Top 5-10 recommendations (not removed, just ranked)
+```
+
+### Example Calculation
+
+**User Profile**:
+- Age: 40, Income: ₹60,000/month (₹7.2M/year)
+- Diseases: Diabetes, Hypertension
+- Budget: ₹8,000/month
+- Preferences: ["health", "life"]
+- Risk: Moderate
+
+**Policy**: HealthPlus (Health, ₹3,500/month, ₹500k coverage)
+
+**Scoring Breakdown**:
+```
+Coverage Match (35 pts):
+  Type match: Health in ["health","life"] → 1.0
+  Coverage detail: 0.95 (health policy with diabetes coverage)
+  Combined: (1.0 × 0.30) + (0.95 × 0.70) = 0.965
+  Points: 0.965 × 35 = 33.78/35 ⭐
+
+Premium Affordability (25 pts):
+  Premium: ₹3,500 ≤ ₹8,000 (within budget)
+  Ratio: 3,500 / 8,000 = 0.4375
+  Score: 0.60 + ((1 - 0.4375) × 0.40) = 0.825
+  Points: 0.825 × 25 = 20.63/25 ✓
+
+Health & Risk Alignment (25 pts):
+  Base (Health policy): 0.90
+  BMI > 25: +0.05 (overweight)
+  Diseases (2): +0.06 (0.03 × 2)
+  Total: 0.90 + 0.05 + 0.06 = 1.01 (capped at 1.0)
+  Risk adjustment (Moderate): × 1.00 (no change)
+  Points: 1.00 × 25 = 25.00/25 ✓
+
+Policy Type Fit (10 pts):
+  Health in preferred → 1.0
+  Points: 1.0 × 10 = 10.00/10 ✓
+
+Provider Rating (5 pts):
+  Default: 0.85 (placeholder)
+  Points: 0.85 × 5 = 4.25/5 ✓
+
+TOTAL SCORE: 33.78 + 20.63 + 25.00 + 10.00 + 4.25 = 93.66/100
+```
+
+**Result**: ⭐⭐⭐⭐⭐ (Excellent Match)  
+**Reason**: "Matches your preferred policy type • Within your budget (₹3,500) • Ideal for managing your health conditions"
+
+---
+
+## Fraud Detection System
+
+### 8 Rules
+
+| Rule | Trigger | Risk |
+|------|---------|------|
+| Duplicate Claims | Same policy, similar amount, <30 days | HIGH |
+| Rapid Claims | >3 claims in 24 hours | HIGH |
+| Exceeds Coverage | Claim > policy coverage | CRITICAL |
+| Suspicious Timing | Claim within 7 days of purchase | HIGH |
+| Missing Docs | Required documents not uploaded | MEDIUM |
+| Anomalous Amount | Claim >200% of typical | MEDIUM |
+| Invalid Status | Claim on inactive policy | CRITICAL |
+| Unverified User | New user, high-value claim | MEDIUM |
+
+### Risk Categories
+
+- **0-30**: Low risk (auto-approved)
+- **31-70**: Medium risk (manual review)
+- **71-100**: High risk (investigation required)
+
+---
+
+## API Documentation
 
 ### Authentication
+
 ```
-POST /auth/register
-POST /auth/login
-GET /user/me?token=<JWT>
-PUT /user/profile?token=<JWT>
+POST   /auth/register              Register new user
+POST   /auth/login                 Login user
+GET    /auth/profile               Get user profile
+PUT    /auth/profile               Update profile
+POST   /auth/preferences           Set preferences
+GET    /auth/preferences           Get preferences
 ```
 
 ### Policies
+
 ```
-GET /policies?policy_type=auto&min_premium=50&max_premium=200
-GET /policies/{policy_id}
-GET /policies/compare?policy_ids=1,2,3
-GET /providers
+GET    /policies                   List policies (paginated, searchable)
+GET    /policies/{id}              Get policy details
+GET    /policies/compare           Compare policies
 ```
 
-### User Policies
+### Recommendations
+
 ```
-POST /user-policies?token=<JWT>
-GET /user-policies?token=<JWT>
-GET /user-policies/{user_policy_id}?token=<JWT>
+POST   /recommendations/generate   Generate 5-10 recommendations
+GET    /recommendations            Get saved recommendations
+```
+
+### Claims
+
+```
+POST   /claims                     Create claim
+GET    /claims                     List user's claims
+GET    /claims/{id}                Get claim details
+POST   /claims/{id}/documents      Upload document
+DELETE /claims/{id}/documents/{id} Delete document
+POST   /claims/{id}/submit         Submit for review
+```
+
+### Purchases
+
+```
+POST   /user-policies              Purchase policy
+GET    /user-policies              List purchased policies
+GET    /user-policies/{id}         Get policy details
 ```
 
 ---
 
-## 🧭 Frontend Pages
+## API Examples
 
-| Path | Component | Purpose |
-|------|-----------|---------|
-| `/` | App | Redirect to /browse |
-| `/login` | Login | User authentication |
-| `/register` | Register | New user sign-up |
-| `/browse` | BrowsePolicies | Policy listing & filtering |
-| `/compare` | ComparePolicies | Policy comparison table |
-| `/profile` | Profile | User dashboard |
+### 1. Register & Set Preferences
+
+```bash
+# Register
+curl -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "John Doe",
+    "email": "john@example.com",
+    "password": "secure123",
+    "dob": "1990-05-15"
+  }'
+
+# Set Preferences
+curl -X POST http://localhost:8000/auth/preferences?token=YOUR_TOKEN \
+  -H "Content-Type: application/json" \
+  -d '{
+    "preferred_policy_types": ["health", "life"],
+    "max_premium": 8000,
+    "risk_profile": "moderate",
+    "age": 40,
+    "income": 720000,
+    "diseases": ["diabetes"]
+  }'
+```
+
+### 2. Get Recommendations
+
+```bash
+curl -X POST http://localhost:8000/recommendations/generate?token=YOUR_TOKEN
+```
+
+### 3. Browse Policies
+
+```bash
+# By type
+curl -X GET "http://localhost:8000/policies?policy_type=health&limit=20"
+
+# Search
+curl -X GET "http://localhost:8000/policies?search=HDFC&limit=20"
+
+# With filters
+curl -X GET "http://localhost:8000/policies?min_premium=1000&max_premium=5000&limit=20"
+```
+
+### 4. Submit Claim
+
+```bash
+curl -X POST http://localhost:8000/claims?token=YOUR_TOKEN \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_policy_id": 1,
+    "claim_type": "health",
+    "incident_date": "2024-01-15",
+    "amount_claimed": 50000,
+    "description": "Hospital treatment"
+  }'
+```
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 newproject/
 ├── backend/
-│   ├── main.py                 # FastAPI app & routes
-│   ├── models.py               # SQLAlchemy ORM models
-│   ├── schemas.py              # Pydantic validation schemas
-│   ├── auth.py                 # Authentication utilities
-│   ├── deps.py                 # FastAPI dependencies
-│   ├── database.py             # PostgreSQL connection
-│   ├── seed_data.py            # Sample data initialization
-│   └── requirements.txt         # Python dependencies
+│   ├── main.py                    # FastAPI app
+│   ├── models.py                  # Database models
+│   ├── schemas.py                 # API schemas
+│   ├── auth.py                    # Authentication
+│   ├── scoring_refactored.py      # Recommendation engine (2-stage)
+│   ├── fraud_rules.py             # Fraud detection (8 rules)
+│   ├── email_service.py           # Email notifications
+│   ├── database.py                # Database config
+│   ├── deps.py                    # Dependency injection
+│   ├── policies_seed_data.json    # 50+ policies
+│   ├── seed_policies.py           # Database seeding
+│   ├── requirements.txt           # Python deps
+│   └── __init__.py
 │
 ├── frontend-react/
 │   ├── src/
-│   │   ├── App.jsx             # Main router component
-│   │   ├── components/
-│   │   │   └── Header.jsx      # Navigation header
 │   │   ├── pages/
-│   │   │   ├── Login.jsx       # Login page
-│   │   │   ├── Register.jsx    # Registration page
-│   │   │   ├── BrowsePolicies.jsx
-│   │   │   ├── ComparePolicies.jsx
-│   │   │   └── Profile.jsx
-│   │   └── App.css
+│   │   │   ├── Login.jsx
+│   │   │   ├── Register.jsx
+│   │   │   ├── Policies.jsx
+│   │   │   ├── Recommendations.jsx
+│   │   │   ├── Claims.jsx
+│   │   │   └── Dashboard.jsx
+│   │   ├── components/
+│   │   ├── styles/
+│   │   ├── App.jsx
+│   │   └── main.jsx
 │   ├── package.json
+│   ├── vite.config.js
 │   └── index.html
 │
-└── .venv/                      # Python virtual environment
+├── README.md                       # This file
+├── RECOMMENDATION_ALGORITHM_REPORT.md  # Technical details
+└── .gitignore
 ```
 
 ---
 
-## 💾 Database Schema
+## Key Achievements
 
-### Users
-```
-id (INT, PK) | name | email (UNIQUE) | password | dob | risk_profile (JSON) | created_at
-```
-
-### Providers
-```
-id (INT, PK) | name | country | created_at
-```
-
-### Policies
-```
-id (INT, PK) | provider_id (FK) | policy_type (ENUM) | title | coverage (JSON)
-premium (NUMERIC) | term_months (INT) | deductible (NUMERIC) | tnc_url | created_at
-```
-
-### User Policies
-```
-id (INT, PK) | user_id (FK) | policy_id (FK) | policy_number (UNIQUE) | start_date
-end_date | premium | status (ENUM) | auto_renew | created_at
-```
-
-### Claims, ClaimDocuments, FraudFlags, Recommendations, AdminLogs
-*(See full schema in PROJECT_DOCUMENTATION.md)*
+✅ **Complete Insurance Platform**: End-to-end workflow  
+✅ **Intelligent 2-Stage Recommendations**: Strict filtering + soft scoring  
+✅ **50+ Realistic Policies**: From 30 real insurance companies  
+✅ **Fraud Detection**: 8 rules with risk scoring  
+✅ **Scalable Architecture**: Policies load from JSON/database  
+✅ **Pagination & Search**: Browse up to 100 policies per request  
+✅ **Professional Documentation**: Academic submission ready  
+✅ **Production-Ready**: Docker support, error handling, logging  
+✅ **Responsive UI**: Mobile-friendly React frontend  
+✅ **Email Notifications**: Automated alerts for claims  
 
 ---
 
-## 🔐 Authentication Flow
+## Running the System
 
-1. **Register**: POST `/auth/register` with name, email, password, dob
-   - Returns: JWT token + user_id
-   
-2. **Login**: POST `/auth/login` with email, password
-   - Returns: JWT token
-   
-3. **Protected Requests**: Add `?token=<JWT>` to query parameters
-   - Backend decodes JWT and retrieves user_id
-   - Returns 401 if token invalid/expired
+### Start Backend
 
-4. **Storage**: Token saved in localStorage on client
-   - Sent with each request requiring authentication
-   - Cleared on logout
-
----
-
-## 🧪 Testing
-
-### Test User
-- Email: `test@example.com`
-- Password: `test123`
-
-### Manual API Testing
 ```bash
-# List all policies
-curl http://localhost:8000/policies
-
-# Get specific policy
-curl http://localhost:8000/policies/1
-
-# Filter policies (auto insurance, $50-150)
-curl "http://localhost:8000/policies?policy_type=auto&min_premium=50&max_premium=150"
-
-# Compare policies
-curl "http://localhost:8000/policies/compare?policy_ids=1,2,3"
-
-# Get user (requires valid token)
-curl "http://localhost:8000/user/me?token=YOUR_JWT_TOKEN"
-```
-
----
-
-## 🛠️ Environment Variables
-
-### Backend (.env or hardcoded)
-```
-DATABASE_URL=postgresql://postgres:958181630@localhost:5432/insurance_db
-SECRET_KEY=SECRET123  # Change in production!
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-```
-
-### Frontend (.env.local)
-```
-VITE_API_URL=http://localhost:8000
-```
-
----
-
-## 📋 Next Steps (Weeks 3-4)
-
-### Recommendations Engine
-- [ ] User preference collection form
-- [ ] Risk profile scoring algorithm
-- [ ] Policy recommendation scoring
-- [ ] Recommendations page with rationale
-- [ ] Personalized dashboard
-
-### Implementation Plan
-1. Create `POST /user/preferences` endpoint
-2. Implement scoring algorithm in Python
-3. Populate Recommendations table
-4. Create Recommendations React page
-5. Add "Get Recommendations" button to Browse page
-
----
-
-## 🐛 Troubleshooting
-
-### Backend won't start
-```bash
-# Check if port 8000 is in use
-netstat -ano | findstr :8000
-
-# Kill process using port 8000
-taskkill /PID <PID> /F
-
-# Restart backend
+cd backend
+source venv/bin/activate  # or venv\Scripts\activate on Windows
 python -m uvicorn main:app --reload --port 8000
 ```
 
-### Database connection error
+### Start Frontend
+
 ```bash
-# Check PostgreSQL is running
-pg_isready -h localhost -p 5432
-
-# Verify credentials and database exists
-psql -U postgres -d insurance_db
+cd frontend-react
+npm run dev
 ```
 
-### Frontend can't connect to backend
-- Check backend is running on 8000
-- Check CORS configuration in `main.py`
-- Check browser console for specific errors
-- Clear browser cache (Ctrl+Shift+Delete)
+### Seed Database (First Time)
 
-### "Module not found" errors
 ```bash
-# Reinstall all dependencies
-pip install -r requirements.txt
-npm install
+cd backend
+python seed_policies.py
 ```
 
----
+### Access Application
 
-## 🤝 Contributing
-
-1. Create feature branch: `git checkout -b feature/description`
-2. Make changes and test locally
-3. Commit with clear messages: `git commit -m "feat: description"`
-4. Push to branch: `git push origin feature/description`
-5. Create pull request
+- Frontend: http://localhost:5173
+- API Docs: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
 
 ---
 
-## 📞 Support
+## Documentation
 
-For issues or questions:
-1. Check the troubleshooting section above
-2. Review `PROJECT_DOCUMENTATION.md` for detailed info
-3. Check backend logs: look for "ERROR" messages
-4. Check browser console: F12 → Console tab
+- **Technical Details**: See [RECOMMENDATION_ALGORITHM_REPORT.md](RECOMMENDATION_ALGORITHM_REPORT.md)
+- **Database Schema**: In `backend/models.py`
+- **API Endpoints**: See `http://localhost:8000/docs` when running
 
 ---
 
-## 📅 Milestone Timeline
-
-| Week | Phase | Status |
-|------|-------|--------|
-| 1-2 | Foundations & Catalog | ✅ Complete |
-| 3-4 | Recommendations | 🚀 In Progress |
-| 5-6 | Claims & Documents | ⏳ Planned |
-| 7-8 | Fraud & Analytics | ⏳ Planned |
-
----
-
-## 📚 Architecture Overview
-
-```
-┌─────────────────┐
-│  React Frontend │
-│  (Vite + Route) │
-└────────┬────────┘
-         │
-         ↓ HTTP/REST
-┌─────────────────┐
-│  FastAPI Server │ ← Authentication (JWT)
-│  (Uvicorn)      │ ← Policy Management
-└────────┬────────┘
-         │
-         ↓ SQLAlchemy ORM
-┌─────────────────┐
-│  PostgreSQL DB  │
-│  (8 Tables)     │
-└─────────────────┘
-```
-
----
-
-**Created**: January 15, 2026  
-**Last Updated**: January 15, 2026  
-**Version**: 1.0.0  
-**Status**: Alpha
+**Version**: 1.0 | **Status**: ✅ Production Ready | **Last Updated**: February 2026
