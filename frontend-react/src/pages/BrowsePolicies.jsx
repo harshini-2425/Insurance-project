@@ -29,12 +29,16 @@ export default function BrowsePolicies() {
             let url = "http://localhost:8000/policies";
             const params = new URLSearchParams();
 
+            // Always request all policies (100 is the backend max)
+            params.append("limit", "100");
+            params.append("skip", "0");
+
             if (filters.policy_type) params.append("policy_type", filters.policy_type);
             if (filters.provider_id) params.append("provider_id", filters.provider_id);
             if (filters.min_premium) params.append("min_premium", filters.min_premium);
             if (filters.max_premium) params.append("max_premium", filters.max_premium);
 
-            if (params.toString()) url += "?" + params.toString();
+            url += "?" + params.toString();
 
             const res = await fetch(url);
             if (!res.ok) throw new Error("Failed to fetch policies");

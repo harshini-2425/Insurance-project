@@ -236,7 +236,7 @@ function ClaimsPage() {
                 formDataObj.append("doc_type", fileData.docType);
 
                 const response = await fetch(
-                    `http://localhost:8000/claims/${currentClaimId}/documents?token=${token}`,
+                    `http://localhost:8000/claims/${currentClaimId}/documents?token=${token}&doc_type=${fileData.docType}`,
                     {
                         method: "POST",
                         body: formDataObj
@@ -244,14 +244,14 @@ function ClaimsPage() {
                 );
 
                 if (!response.ok) {
-                    const data = await response.json();
-                    setError(data.detail || `Failed to upload ${fileData.fileName}`);
+                    const errorData = await response.json().catch(() => ({}));
+                    setError(errorData.detail || `Failed to upload ${fileData.fileName}`);
                     return;
                 }
             }
 
-            setSuccess("Documents uploaded successfully!");
-            setWizardStep(3);
+            setSuccess("✅ Documents uploaded successfully! Proceeding to review...");
+            setTimeout(() => setWizardStep(3), 1000);
         } catch (err) {
             setError("Error uploading documents: " + err.message);
         } finally {
@@ -542,14 +542,18 @@ function ClaimsPage() {
                                         ) : (
                                             <div className="file-input-wrapper">
                                                 <input
+                                                    id={`file-input-${docType}`}
                                                     type="file"
                                                     accept=".pdf,.jpg,.jpeg,.png"
                                                     onChange={(e) => handleFileInputChange(e, docType)}
                                                     disabled={loading}
                                                 />
-                                                <span className="file-input-label">
+                                                <label
+                                                    htmlFor={`file-input-${docType}`}
+                                                    className="file-input-label"
+                                                >
                                                     Click to select PDF, JPG, or PNG
-                                                </span>
+                                                </label>
                                             </div>
                                         )}
                                     </div>

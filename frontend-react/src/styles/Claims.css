@@ -206,6 +206,9 @@
 .file-input-wrapper input[type="file"] {
     position: absolute;
     left: -9999px;
+    opacity: 0;
+    width: 0;
+    height: 0;
 }
 
 .file-input-label {
@@ -218,12 +221,18 @@
     text-align: center;
     cursor: pointer;
     transition: all 0.3s ease;
+    margin: 0;
 }
 
 .file-input-wrapper:hover .file-input-label {
     background: #efefef;
     border-color: #667eea;
     color: #333;
+}
+
+.file-input-wrapper input[type="file"]:focus + .file-input-label {
+    border-color: #667eea;
+    background: #efefef;
 }
 
 .documents-count {

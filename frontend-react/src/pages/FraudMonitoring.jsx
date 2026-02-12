@@ -118,7 +118,7 @@ export default function FraudMonitoring() {
                         }}>
                             🛡️ Fraud Monitoring Dashboard
                         </h1>
-                        <p style={{ margin: "0", opacity: "0.9" }}>Week 7: Fraud Rules & Admin Analytics</p>
+                        <p style={{ margin: "0", opacity: "0.9" }}>Fraud Rules & Admin Analytics</p>
                     </div>
                     <button
                         onClick={() => navigate("/claims")}

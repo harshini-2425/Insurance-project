@@ -126,7 +126,7 @@ def list_policies(
     min_premium: Decimal = Query(None, description="Minimum premium"),
     max_premium: Decimal = Query(None, description="Maximum premium"),
     skip: int = Query(0, ge=0, description="Number of policies to skip"),
-    limit: int = Query(20, ge=1, le=100, description="Number of policies to return (max 100)"),
+    limit: int = Query(100, ge=1, le=100, description="Number of policies to return (max 100)"),
     db: Session = Depends(get_db)
 ):
     """
