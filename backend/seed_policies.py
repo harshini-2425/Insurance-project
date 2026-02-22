@@ -7,8 +7,8 @@ import json
 import sys
 sys.path.insert(0, '.')
 
-from database import engine, SessionLocal
-import models
+from backend.database import engine, SessionLocal
+from backend import models
 from datetime import datetime
 
 def load_seed_data(json_file='policies_seed_data.json'):

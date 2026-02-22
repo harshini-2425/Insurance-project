@@ -1,5 +1,5 @@
-from database import engine
-from models import Base
+from backend.database import engine
+from backend.models import Base
 
 try:
     # Create all tables defined in models

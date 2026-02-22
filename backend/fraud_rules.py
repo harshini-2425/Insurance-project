@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Dict, Tuple
 from sqlalchemy.orm import Session
-import models
+from . import models
 
 class FraudRule:
     """Base class for all fraud detection rules"""

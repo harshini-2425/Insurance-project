@@ -19,7 +19,9 @@ class UserOut(BaseModel):
     id: int
     name: str
     email: str
-    dob: date
+    dob: Optional[date] = None
+    is_admin: bool
+    role: Optional[str] = None
     risk_profile: Optional[Dict]
     created_at: datetime
 

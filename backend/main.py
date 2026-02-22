@@ -1,37 +1,767 @@
-from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File
+
+
+from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File, Header
+from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from database import engine
-import models, schemas
-from auth import hash_password, verify_password, create_access_token
-from deps import get_db, get_current_user
-from scoring_refactored import rank_policies
-from fraud_rules import check_claim_for_fraud, get_claim_fraud_risk_level
-from email_service import EmailService
+from sqlalchemy import func, text
+from .database import engine
+from . import models, schemas
+from .auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM, ADMIN_EMAIL, ADMIN_CREDENTIALS
+from .deps import get_db, get_current_user
+from .claim_service import ClaimService
+from .admin_middleware import get_admin_user
+from .scoring_refactored import rank_policies
+from .fraud_rules import check_claim_for_fraud, get_claim_fraud_risk_level
+from .email_service import EmailService
+from jose import jwt
+from jose.exceptions import ExpiredSignatureError, JWTError
 import uuid
+import json
+from typing import Any
+
 from datetime import datetime
 from decimal import Decimal
+
+# ============ ADMIN: USERS & FRAUD SUMMARY ============
+def admin_list_users(db: Session = Depends(get_db), token: str = Query(...)):
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    users = db.query(models.User).order_by(models.User.created_at.desc()).all()
+    return [
+        {
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "dob": str(u.dob) if u.dob else None,
+            "is_admin": u.is_admin,
+            "created_at": str(u.created_at)
+        } for u in users
+    ]
+
+def admin_recent_users(db: Session = Depends(get_db), token: str = Query(...)):
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    users = db.query(models.User).order_by(models.User.created_at.desc()).limit(10).all()
+    return [
+        {
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "dob": str(u.dob) if u.dob else None,
+            "is_admin": u.is_admin,
+            "created_at": str(u.created_at)
+        } for u in users
+    ]
+
+def fraud_summary(db: Session = Depends(get_db), token: str = Query(...)):
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    # Example: count total fraud flags
+    total_flags = db.query(models.FraudFlag).count() if hasattr(models, 'FraudFlag') else 0
+    return {"total_flags": total_flags}
+
+
+def admin_list_claims(db: Session = Depends(get_db), token: str = Query(...)):
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    claims = db.query(models.Claim).all()
+    result = []
+    for claim in claims:
+        claim_docs = [
+            {
+                "id": doc.id,
+                "file_name": doc.file_name,
+                "file_type": doc.file_type,
+                "doc_type": doc.doc_type,
+                "uploaded_at": str(doc.uploaded_at)
+            }
+            for doc in claim.documents
+        ]
+        result.append({
+            "id": claim.id,
+            "user_id": claim.user_policy.user_id if claim.user_policy else None,
+            "claim_type": claim.claim_type,
+            "amount_claimed": float(claim.amount_claimed),
+            "status": claim.status,
+            "risk_level": None,  # TODO: Add risk level logic
+            "documents": claim_docs
+        })
+    return result
+
+def get_pending_documents_for_approval(
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all pending documents for admin review.
+    Only accessible by admin users.
+    """
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Get all documents WITHOUT any approval (pending review)
+    # Use a subquery to find documents that don't have an approval record
+    from sqlalchemy import and_, not_, exists
+    subquery = db.query(models.DocumentApproval.id).filter(
+        models.DocumentApproval.document_id == models.ClaimDocument.id
+    ).exists()
+    pending_docs = db.query(models.ClaimDocument).filter(~subquery).all()
+    
+    result = []
+    for doc in pending_docs:
+        claim = doc.claim
+        user_policy = claim.user_policy
+        policy = user_policy.policy
+        claim_user = user_policy.user
+        
+        # Get fraud flags for this claim
+        fraud_flags = db.query(models.FraudFlag).filter(
+            models.FraudFlag.claim_id == claim.id
+        ).all()
+        
+        result.append({
+            "document": {
+                "id": doc.id,
+                "file_name": doc.file_name,
+                "file_type": doc.file_type,
+                "doc_type": doc.doc_type,
+                "uploaded_at": str(doc.uploaded_at)
+            },
+            "claim": {
+                "id": claim.id,
+                "claim_number": claim.claim_number,
+                "claim_type": claim.claim_type,
+                "amount_claimed": str(claim.amount_claimed),
+                "status": claim.status,
+                "incident_date": str(claim.incident_date)
+            },
+            "user": {
+                "id": claim_user.id,
+                "name": claim_user.name,
+                "email": claim_user.email
+            },
+            "policy": {
+                "title": policy.title,
+                "provider": policy.provider.name if policy.provider else "Unknown",
+                "policy_type": policy.policy_type
+            },
+            "fraud_flags": [
+                {
+                    "id": flag.id,
+                    "code": flag.rule_code,
+                    "severity": flag.severity,
+                    "details": flag.details
+                }
+                for flag in fraud_flags
+            ]
+        })
+    
+    return {
+        "total": len(result),
+        "documents": result
+    }
+
+def admin_get_document(doc_id: int, db: Session = Depends(get_db), token: str = Query(...)):
+    """
+    Retrieve a specific document by ID.
+    Admin only endpoint.
+    Returns file data as StreamingResponse.
+    """
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    doc = db.query(models.ClaimDocument).filter(models.ClaimDocument.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    if not doc.file_data:
+        raise HTTPException(status_code=404, detail="Document has no file data")
+    
+    # Return file as streaming response with proper headers
+    from io import BytesIO
+    return StreamingResponse(
+        iter([doc.file_data]),
+        media_type=doc.file_type,
+        headers={
+            "Content-Disposition": f"attachment; filename={doc.file_name}"
+        }
+    )
+
+def admin_approve_claim(claim_id: int, db: Session = Depends(get_db), token: str = Query(...)):
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    claim = db.query(models.Claim).filter(models.Claim.id == claim_id).first()
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    claim.status = "approved"
+    db.commit()
+    return {"id": claim.id, "status": claim.status, "message": "Claim approved"}
+
+def admin_reject_claim(claim_id: int, db: Session = Depends(get_db), token: str = Query(...)):
+    user = get_current_user(token, db)
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    claim = db.query(models.Claim).filter(models.Claim.id == claim_id).first()
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    claim.status = "rejected"
+    db.commit()
+    return {"id": claim.id, "status": claim.status, "message": "Claim rejected"}
+
+
+ADMIN_ROUTES = [
+    ("/admin/claims", admin_list_claims, ["GET"]),
+    ("/admin/documents/pending", get_pending_documents_for_approval, ["GET"]),
+    ("/admin/documents/{doc_id}", admin_get_document, ["GET"]),
+    ("/admin/approve/{claim_id}", admin_approve_claim, ["POST"]),
+    ("/admin/reject/{claim_id}", admin_reject_claim, ["POST"]),
+]
 
 models.Base.metadata.create_all(bind=engine)
 
 # Create app
 app = FastAPI(title="Insurance Comparison & Claims Assistant")
 
-# CORS Configuration - MUST be before routes
+# CORS Configuration - MUST be BEFORE routes!
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Register admin routes after app is defined
+for path, view, methods in ADMIN_ROUTES:
+    app.add_api_route(path, view, methods=methods)
+
+# Register new admin endpoints after app is defined
+app.add_api_route("/admin/users", admin_list_users, methods=["GET"])
+app.add_api_route("/admin/users/recent", admin_recent_users, methods=["GET"])
+app.add_api_route("/fraud/summary", fraud_summary, methods=["GET"])
+
+# Mount static files for uploads
+import os
+uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
+os.makedirs(uploads_dir, exist_ok=True)
+if os.path.exists(uploads_dir):
+    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
+# ==================== ENTERPRISE CLAIM APPROVAL ENDPOINTS ====================
+
+@app.post("/api/admin/claims/{claim_id}/approve")
+def enterprise_approve_claim(
+    claim_id: int,
+    reason: str = Query(default=None),
+    admin_notes: str = Query(default=None),
+    token: str = Query(...),
+    db: Session = Depends(get_db),
+    request=None
+):
+    """
+    Enterprise-grade claim approval with audit logging
+    - Admin-only access
+    - Transaction-safe updates
+    - Automatic audit log creation
+    - Real-time notifications
+    """
+    try:
+        # Check admin authorization
+        user = get_current_user(token, db)
+        if not (getattr(user, "is_admin", False) or (hasattr(user, "role") and user.role == models.UserRoleEnum.admin)):
+            raise HTTPException(status_code=403, detail="Admin access required. User must have admin role.")
+        admin = user
+        
+        # Get client IP
+        ip_address = None
+        if request:
+            ip_address = request.client.host if request.client else None
+        
+        # Approve claim using service with transaction support
+        result = ClaimService.approve_claim(
+            claim_id=claim_id,
+            admin_id=admin.id,
+            reason=reason or "",
+            admin_notes=admin_notes or "",
+            db=db,
+            ip_address=ip_address
+        )
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Approval failed: {str(e)}")
+
+@app.post("/api/admin/claims/{claim_id}/reject")
+def enterprise_reject_claim(
+    claim_id: int,
+    reason: str = Query(...),
+    admin_notes: str = Query(default=None),
+    token: str = Query(...),
+    db: Session = Depends(get_db),
+    request=None
+):
+    """
+    Enterprise-grade claim rejection with detailed reasoning
+    - Admin-only access
+    - Required rejection reason
+    - Transaction-safe updates
+    - Automatic notifications
+    """
+    try:
+        # Check admin authorization
+        user = get_current_user(token, db)
+        if not (getattr(user, "is_admin", False) or (hasattr(user, "role") and user.role == models.UserRoleEnum.admin)):
+            raise HTTPException(status_code=403, detail="Admin access required. User must have admin role.")
+        admin = user
+        
+        if not reason or reason.strip() == "":
+            raise HTTPException(status_code=400, detail="Rejection reason is required")
+        
+        # Get client IP
+        ip_address = None
+        if request:
+            ip_address = request.client.host if request.client else None
+        
+        # Reject claim using service
+        result = ClaimService.reject_claim(
+            claim_id=claim_id,
+            admin_id=admin.id,
+            reason=reason,
+            admin_notes=admin_notes or "",
+            db=db,
+            ip_address=ip_address
+        )
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Rejection failed: {str(e)}")
+
+@app.get("/api/admin/dashboard/stats")
+def get_admin_dashboard_stats(
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get real-time dashboard statistics for admin"""
+    try:
+        user = get_current_user(token, db)
+        if not (getattr(user, "is_admin", False) or (hasattr(user, "role") and user.role == models.UserRoleEnum.admin)):
+            raise HTTPException(status_code=403, detail="Admin access required. User must have admin role.")
+        admin = user
+        stats = ClaimService.get_admin_dashboard_stats(db)
+        return {
+            "status": "success",
+            "admin_id": admin.id,
+            "admin_email": admin.email,
+            "stats": stats
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/admin/audit-logs")
+def get_audit_logs(
+    admin_id: int = Query(default=None),
+    target_type: str = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get audit logs for compliance and tracking"""
+    try:
+        user = get_current_user(token, db)
+        if not (getattr(user, "is_admin", False) or (hasattr(user, "role") and user.role == models.UserRoleEnum.admin)):
+            raise HTTPException(status_code=403, detail="Admin access required. User must have admin role.")
+        admin = user
+        logs = ClaimService.get_audit_logs(
+            admin_id=admin_id,
+            target_type=target_type,
+            limit=limit,
+            offset=offset,
+            db=db
+        )
+        return {
+            "status": "success",
+            "count": len(logs),
+            "logs": logs
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/claims-list")
+def get_admin_claims_list(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=15, ge=1, le=100),
+    status: str = Query(default=None),
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get list of claims for admin review with pagination and filtering"""
+    try:
+        # Get current user and verify admin access
+        user = get_current_user(token, db)
+        if not (getattr(user, "is_admin", False) or (hasattr(user, "role") and user.role == models.UserRoleEnum.admin)):
+            raise HTTPException(status_code=403, detail="Admin access required. User must have admin role.")
+        
+        # Build query
+        query = db.query(models.Claim).join(models.UserPolicy)
+        
+        # Filter by status if provided
+        if status and status != 'all':
+            query = query.filter(models.Claim.status == status)
+        
+        # Get total count
+        total_count = query.count()
+        
+        # Get paginated results
+        claims = query.order_by(
+            models.Claim.created_at.desc()
+        ).offset(skip).limit(limit).all()
+        
+        # Format claims for response
+        claims_data = []
+        for claim in claims:
+            user_policy = claim.user_policy
+            claims_data.append({
+                "id": claim.id,
+                "claim_number": claim.claim_number,
+                "claim_type": claim.claim_type,
+                "status": claim.status,
+                "amount_claimed": str(claim.amount_claimed),
+                "incident_date": claim.incident_date.isoformat() if claim.incident_date else None,
+                "description": claim.description,
+                "created_at": claim.created_at.isoformat(),
+                "documents_count": len(claim.documents) if claim.documents else 0,
+                "user_id": user_policy.user_id if user_policy else None,
+            })
+        
+        return {
+            "status": "success",
+            "data": {
+                "claims": claims_data,
+                "total_count": total_count,
+                "skip": skip,
+                "limit": limit
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== NOTIFICATION ENDPOINTS ====================
+
+@app.get("/api/user/notifications")
+def get_user_notifications(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get notifications for current user"""
+    try:
+        user = get_current_user(token, db)  # Use get_current_user for all authenticated users
+        result = ClaimService.get_user_notifications(
+            user_id=user.id,
+            limit=limit,
+            offset=offset,
+            db=db
+        )
+        return {
+            "status": "success",
+            "user_id": user.id,
+            **result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/notifications/{notification_id}/read")
+def mark_notification_read(
+    notification_id: int,
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Mark a notification as read"""
+    try:
+        user = get_current_user(token, db)  # Use get_current_user for all authenticated users
+        success = ClaimService.mark_notification_as_read(
+            notification_id=notification_id,
+            db=db
+        )
+        
+        if success:
+            return {
+                "status": "success",
+                "message": "Notification marked as read"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Notification not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============ HEALTH CHECK ============
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(db: Session = Depends(get_db)):
+    """Health check endpoint with database connection info"""
+    try:
+        # Test database connection
+        db.execute(text("SELECT 1"))
+        db_status = "connected"
+        db_url_masked = "postgresql://postgres:***@localhost:5432/insurance_db"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+        db_url_masked = "ERROR"
+    
+    return {
+        "status": "ok",
+        "database": db_status,
+        "database_url": db_url_masked
+    }
+
+
+# ============ DEBUG ENDPOINTS ============
+
+@app.get("/debug/database-info")
+def debug_database_info(db: Session = Depends(get_db)):
+    """Check database connection and table schema"""
+    try:
+        # Check database info
+        result = db.execute(text("SELECT version()")).scalar()
+        postgres_version = result
+        
+        # Check if claim_documents table exists
+        table_check = db.execute(text("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_name = 'claim_documents'
+            )
+        """)).scalar()
+        
+        # Get column information
+        columns_info = db.execute(text("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = 'claim_documents'
+            ORDER BY ordinal_position
+        """)).fetchall()
+        
+        return {
+            "postgres_version": postgres_version,
+            "claim_documents_table_exists": table_check,
+            "columns": [
+                {"name": col[0], "type": col[1], "nullable": col[2]} 
+                for col in columns_info
+            ]
+        }
+    except Exception as e:
+        return {
+            "error": f"Database check failed: {str(e)}",
+            "details": str(e)
+        }
+
+
+@app.get("/debug/documents")
+def debug_get_documents(db: Session = Depends(get_db)):
+    """
+    Debug endpoint: List all uploaded documents with metadata.
+    Shows what's actually stored in the database.
+    """
+    try:
+        # Query all documents with file sizes
+        docs = db.execute("""
+            SELECT 
+                id,
+                claim_id,
+                file_name,
+                file_type,
+                doc_type,
+                OCTET_LENGTH(file_data) as file_size_bytes,
+                uploaded_at
+            FROM claim_documents
+            ORDER BY uploaded_at DESC
+        """).fetchall()
+        
+        print(f"\n[DEBUG] Found {len(docs)} documents in database")
+        
+        documents = []
+        for doc in docs:
+            doc_dict = {
+                "id": doc[0],
+                "claim_id": doc[1],
+                "file_name": doc[2],
+                "file_type": doc[3],
+                "doc_type": doc[4],
+                "file_size_bytes": doc[5],
+                "uploaded_at": str(doc[6]),
+                "has_data": "YES" if doc[5] and doc[5] > 0 else "NO (EMPTY!)"
+            }
+            documents.append(doc_dict)
+            print(f"  Doc ID={doc[0]}: {doc[2]} ({doc[5]} bytes)")
+        
+        return {
+            "total_documents": len(documents),
+            "documents": documents
+        }
+    except Exception as e:
+        print(f"[DEBUG] Error fetching documents: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "error": f"Failed to fetch documents: {str(e)}",
+            "details": str(e)
+        }
+
+
+@app.get("/debug/document/{doc_id}")
+def debug_get_document_details(doc_id: int, db: Session = Depends(get_db)):
+    """
+    Debug endpoint: Get detailed info about a specific document.
+    """
+    try:
+        doc = db.query(models.ClaimDocument).filter(
+            models.ClaimDocument.id == doc_id
+        ).first()
+        
+        if not doc:
+            return {"error": f"Document {doc_id} not found"}
+        
+        file_size = len(doc.file_data) if doc.file_data else 0
+        
+        print(f"\n[DEBUG] Document {doc_id}:")
+        print(f"  File name: {doc.file_name}")
+        print(f"  File type: {doc.file_type}")
+        print(f"  File size: {file_size} bytes")
+        print(f"  Claim ID: {doc.claim_id}")
+        print(f"  Uploaded: {doc.uploaded_at}")
+        print(f"  Data status: {'OK' if file_size > 0 else 'EMPTY!'}")
+        
+        # Get first 100 bytes as hex for verification
+        first_100_bytes = None
+        if doc.file_data and len(doc.file_data) > 0:
+            first_100_bytes = doc.file_data[:100].hex()
+        
+        return {
+            "id": doc.id,
+            "claim_id": doc.claim_id,
+            "file_name": doc.file_name,
+            "file_type": doc.file_type,
+            "doc_type": doc.doc_type,
+            "file_size_bytes": file_size,
+            "uploaded_at": str(doc.uploaded_at),
+            "has_data": "YES" if file_size > 0 else "NO (EMPTY!)",
+            "first_100_bytes_hex": first_100_bytes,
+            "note": "If first_100_bytes_hex is None/empty, the file_data column is NULL or empty"
+        }
+    except Exception as e:
+        print(f"[DEBUG] Error fetching document {doc_id}: {str(e)}")
+        return {
+            "error": f"Failed to fetch document: {str(e)}",
+            "details": str(e)
+        }
+
+
+@app.post("/debug/verify-database")
+def debug_verify_database(db: Session = Depends(get_db)):
+    """
+    Debug endpoint: Run complete database verification.
+    Tests connection, schema, and performs a test insert.
+    """
+    results = {
+        "connection": "FAIL",
+        "table_exists": False,
+        "schema_correct": False,
+        "test_insert": "SKIPPED",
+        "issues": []
+    }
+    
+    try:
+        # 1. Test connection
+        db.execute(text("SELECT 1"))
+        results["connection"] = "OK"
+        print("[DEBUG] ✓ Database connection successful")
+        
+        # 2. Check table exists
+        table_exists = db.execute(text("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_name = 'claim_documents'
+            )
+        """)).scalar()
+        
+        results["table_exists"] = table_exists
+        if table_exists:
+            print("[DEBUG] ✓ claim_documents table exists")
+        else:
+            print("[DEBUG] ✗ claim_documents table NOT FOUND")
+            results["issues"].append("claim_documents table does not exist")
+            return results
+        
+        # 3. Check schema
+        columns = db.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'claim_documents'
+        """)).fetchall()
+        
+        column_names = [col[0] for col in columns]
+        required_columns = {'id', 'claim_id', 'file_data', 'file_name', 'file_type', 'doc_type', 'uploaded_at'}
+        actual_columns = set(column_names)
+        
+        if required_columns.issubset(actual_columns):
+            results["schema_correct"] = True
+            print("[DEBUG] ✓ All required columns present")
+        else:
+            missing = required_columns - actual_columns
+            results["issues"].append(f"Missing columns: {missing}")
+            print(f"[DEBUG] ✗ Missing columns: {missing}")
+        
+        # 4. Count documents
+        count = db.query(models.ClaimDocument).count()
+        results["document_count"] = count
+        print(f"[DEBUG] Total documents in database: {count}")
+        
+        results["status"] = "READY" if results["schema_correct"] else "SCHEMA_ERROR"
+        
+    except Exception as e:
+        results["error"] = str(e)
+        results["issues"].append(f"Exception: {str(e)}")
+        print(f"[DEBUG] ✗ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    
+    return results
 
 # ============ MODULE A: AUTH & PROFILE ============
 
@@ -70,9 +800,33 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
 @app.post("/auth/login")
 def login(data: schemas.UserLogin, db: Session = Depends(get_db)):
     try:
+        # Check if this is the ONLY allowed admin email with correct password
+        is_admin_credential = data.email == ADMIN_EMAIL and data.email in ADMIN_CREDENTIALS and ADMIN_CREDENTIALS[data.email] == data.password
+        
+        # Try to find user by email
         user = db.query(models.User).filter(models.User.email == data.email).first()
-        if not user or not verify_password(data.password, user.password):
+        
+        # If user found, verify password
+        if user:
+            if not verify_password(data.password, user.password):
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+        else:
+            # If user not found but credentials match admin credentials, this is an error
+            # User must exist in database
             raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        # Update user's role and is_admin status
+        # ONLY the admin email (elchuritejaharshini@gmail.com) gets admin access - STRICT ENFORCEMENT
+        if is_admin_credential and data.email == ADMIN_EMAIL:
+            user.role = models.UserRoleEnum.admin
+            user.is_admin = True
+        else:
+            # ALL other users are regular users - no admin access for anyone else
+            user.role = models.UserRoleEnum.user
+            user.is_admin = False
+        
+        db.commit()
+        db.refresh(user)
 
         token = create_access_token({"user_id": user.id})
         return {"access_token": token, "user_id": user.id, "user": schemas.UserOut.from_orm(user)}
@@ -82,15 +836,26 @@ def login(data: schemas.UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/user/me", response_model=schemas.UserOut)
-def get_profile(token: str = Query(...), db: Session = Depends(get_db)):
+def get_profile(
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db)
+):
     """Get current user profile"""
-    user = get_current_user(token, db)
+    raw_token = _extract_recommendation_token(token, authorization)
+    user = get_current_user(raw_token, db)
     return schemas.UserOut.from_orm(user)
 
 @app.put("/user/profile", response_model=schemas.UserOut)
-def update_profile(data: schemas.UserUpdate, token: str = Query(...), db: Session = Depends(get_db)):
+def update_profile(
+    data: schemas.UserUpdate,
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db)
+):
     """Update user profile"""
-    user = get_current_user(token, db)
+    raw_token = _extract_recommendation_token(token, authorization)
+    user = get_current_user(raw_token, db)
     
     if data.name:
         user.name = data.name
@@ -171,18 +936,38 @@ def list_policies(
     policies = query.order_by(models.Policy.title).offset(skip).limit(limit).all()
     
     # Format response with pagination metadata
+    formatted_policies = []
+    for p in policies:
+        try:
+            policy_data = {
+                "id": p.id,
+                "provider_id": p.provider_id,
+                "policy_type": p.policy_type.value if hasattr(p.policy_type, 'value') else str(p.policy_type),
+                "title": p.title,
+                "coverage": p.coverage,
+                "premium": float(p.premium) if p.premium else 0,
+                "term_months": p.term_months,
+                "deductible": float(p.deductible) if p.deductible else 0,
+                "tnc_url": p.tnc_url,
+                "created_at": p.created_at,
+                "provider": {
+                    "id": p.provider.id,
+                    "name": p.provider.name,
+                    "country": p.provider.country,
+                    "created_at": p.provider.created_at
+                } if p.provider else None
+            }
+            formatted_policies.append(policy_data)
+        except Exception as e:
+            print(f"Error serializing policy {p.id}: {e}")
+            continue
+    
     return {
         "total": total_count,
         "skip": skip,
         "limit": limit,
-        "count": len(policies),
-        "policies": [
-            {
-                **schemas.PolicyOut.from_orm(p).dict(),
-                "provider": schemas.ProviderOut.from_orm(p.provider).dict() if p.provider else None
-            } 
-            for p in policies
-        ]
+        "count": len(formatted_policies),
+        "policies": formatted_policies
     }
 
 @app.get("/policies/compare")
@@ -317,10 +1102,16 @@ def get_user_policy(
     )
 
 @app.post("/user/preferences")
-def save_preferences(data: dict, token: str = Query(...), db: Session = Depends(get_db)):
+def save_preferences(
+    data: dict,
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db)
+):
     """Save user preferences and auto-generate recommendations"""
     try:
-        user = get_current_user(token, db)
+        raw_token = _extract_recommendation_token(token, authorization)
+        user = get_current_user(raw_token, db)
 
         diseases = data.get("diseases", [])
         bmi = float(data.get("bmi") or 0)
@@ -384,13 +1175,15 @@ def save_preferences(data: dict, token: str = Query(...), db: Session = Depends(
                         'id': p.id,
                         'title': p.title,
                         'premium': float(p.premium),
+                        'coverage_amount': getattr(p, 'coverage_amount', None),
                         'coverage': p.coverage or {},
                         'policy_type': p.policy_type,
-                        'provider_id': p.provider_id
+                        'provider_id': p.provider_id,
+                        'provider_rating': getattr(p.provider, 'rating', 4.0) if p.provider else 4.0
                     })
                 
                 # Score and rank policies with full user data
-                ranked = rank_policies(policies_dict, preferences, risk_profile, user_full_data, top_n=5)
+                ranked = rank_policies(policies_dict, preferences, risk_profile, user_full_data)
                 
                 # Clear existing recommendations
                 db.query(models.Recommendation).filter(models.Recommendation.user_id == user.id).delete()
@@ -430,195 +1223,207 @@ def save_preferences(data: dict, token: str = Query(...), db: Session = Depends(
 
 # ============ MODULE D: RECOMMENDATIONS (Week 4) ============
 
-@app.post("/recommendations/generate")
-def generate_recommendations(
-    token: str = Query(...),
-    db: Session = Depends(get_db)
-):
-    """
-    Generate and save personalized policy recommendations for user.
-    
-    Two-stage process:
-    1. STRICT: Filter by user-selected policy types (policy_type)
-    2. SOFT: Score remaining policies and rank (5-10 recommendations)
-    
-    Returns top recommendations or more browsable options if available.
-    """
+def _extract_recommendation_token(token: str | None, authorization: str | None) -> str:
+    if authorization:
+        auth_value = authorization.strip()
+        if auth_value.lower().startswith("bearer "):
+            bearer_token = auth_value.split(" ", 1)[1].strip()
+            if bearer_token:
+                return bearer_token
+        elif auth_value:
+            return auth_value
+
+    if token:
+        return token
+
+    raise HTTPException(status_code=401, detail="Missing authentication token")
+
+
+def _get_recommendation_user(db: Session, token: str | None, authorization: str | None) -> models.User:
+    raw_token = _extract_recommendation_token(token, authorization)
     try:
-        user = get_current_user(token, db)
-        
-        # Get user preferences and health data
-        if not user.risk_profile:
-            raise HTTPException(status_code=400, detail="Please set your preferences first")
-        
-        risk_profile = user.risk_profile.get('risk_profile', 'moderate')
-        preferences = user.risk_profile.get('preferences', {})
-        
-        # Build full user data for comprehensive scoring (restructured)
-        user_full_data = {
-            'demographics': {
-                'age': user.risk_profile.get('age'),
-                'income': user.risk_profile.get('income'),
-                'bmi': user.risk_profile.get('bmi'),
-                'diseases': user.risk_profile.get('diseases', []),
-                'has_kids': user.risk_profile.get('has_kids'),
-                'marital_status': user.risk_profile.get('marital_status'),
-                'height': user.risk_profile.get('height'),
-                'weight': user.risk_profile.get('weight')
-            },
-            'health': {
-                'age': user.risk_profile.get('age'),
-                'bmi': user.risk_profile.get('bmi'),
-                'diseases': user.risk_profile.get('diseases', [])
-            },
-            'preferences': preferences
-        }
-        
-        # Get all available policies
-        all_policies = db.query(models.Policy).all()
-        if not all_policies:
-            raise HTTPException(status_code=404, detail="No policies available")
-        
-        # Convert policies to dict for scoring
-        policies_dict = []
-        for p in all_policies:
-            policies_dict.append({
-                'id': p.id,
-                'title': p.title,
-                'premium': float(p.premium),
-                'coverage_amount': p.coverage_amount,
-                'coverage': p.coverage or {},
-                'policy_type': p.policy_type,
-                'provider_id': p.provider_id,
-                'description': p.description
-            })
-        
-        # RANK POLICIES using refactored scoring engine
-        # STAGE 1: Strict policy-type filtering
-        # STAGE 2: Soft constraints via scoring and ranking
-        ranked = rank_policies(
-            policies_dict,
-            preferences,
-            risk_profile,
-            user_full_data,
-            top_n=10  # Return up to 10 recommendations instead of 5
-        )
-        
-        # Check if any policies passed filtering
-        if not ranked:
-            return {
-                "message": "No policies match your selected policy types",
-                "details": f"No policies of type {preferences.get('preferred_policy_types')} are available. "
-                          f"Please adjust your preferences.",
-                "recommendations": []
-            }
-        
-        # Clear existing recommendations
-        db.query(models.Recommendation).filter(models.Recommendation.user_id == user.id).delete()
-        
-        # Save all ranked recommendations (no additional validation needed)
-        saved_recommendations = []
-        for policy_dict, score, reason in ranked:
-            rec = models.Recommendation(
-                user_id=user.id,
-                policy_id=policy_dict['id'],
-                score=score,
-                reason=reason
-            )
-            db.add(rec)
-            saved_recommendations.append(rec)
-        
-        db.commit()
-        
-        # Return with policy details
-        result = []
-        for rec in saved_recommendations:
-            db.refresh(rec)
-            policy = db.query(models.Policy).filter(models.Policy.id == rec.policy_id).first()
-            if policy:
-                result.append({
-                'id': rec.id,
-                'policy_id': rec.policy_id,
-                'score': float(rec.score),
-                'reason': rec.reason,
-                'created_at': rec.created_at,
-                'policy': {
-                    'id': policy.id,
-                    'title': policy.title,
-                    'premium': float(policy.premium),
-                    'coverage': policy.coverage,
-                    'provider': {
-                        'id': policy.provider.id,
-                        'name': policy.provider.name
-                    }
-                }
-            })
-        
-        return result
+        payload = jwt.decode(raw_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
     except HTTPException:
         raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+    except ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-@app.get("/recommendations")
-def get_recommendations(
-    token: str = Query(...),
-    db: Session = Depends(get_db)
-):
-    """Get user's saved recommendations"""
-    user = get_current_user(token, db)
-    
-    recommendations = db.query(models.Recommendation).filter(
-        models.Recommendation.user_id == user.id
-    ).order_by(models.Recommendation.score.desc()).all()
-    
-    if not recommendations:
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user
+
+
+def _build_recommendation_inputs(user: models.User):
+    profile = user.risk_profile or {}
+    if isinstance(profile, str):
+        try:
+            profile = json.loads(profile)
+        except Exception:
+            profile = {}
+    if not isinstance(profile, dict):
+        profile = {}
+
+    profile_preferences = profile.get('preferences', {})
+    if not isinstance(profile_preferences, dict):
+        profile_preferences = {}
+
+    preferred_types = profile_preferences.get(
+        'preferred_policy_types',
+        profile.get('preferred_policy_types', getattr(user, 'preferred_policy_types', []))
+    )
+    if isinstance(preferred_types, str):
+        preferred_types = [preferred_types]
+    if preferred_types is None:
+        preferred_types = []
+    preferred_types = [str(policy_type).strip().lower() for policy_type in preferred_types if str(policy_type).strip()]
+
+    max_premium = profile_preferences.get('max_premium', profile.get('max_premium', getattr(user, 'max_premium', None)))
+    user_budget = profile_preferences.get('user_budget', max_premium)
+
+    risk_profile = profile.get('risk_profile') or profile.get('risk_level') or 'moderate'
+    preferences = {
+        'preferred_policy_types': preferred_types,
+        'max_premium': max_premium,
+        'user_budget': user_budget
+    }
+
+    user_full_data = {
+        'demographics': {
+            'age': profile.get('age'),
+            'income': profile.get('income'),
+            'bmi': profile.get('bmi'),
+            'diseases': profile.get('diseases', []),
+            'has_kids': profile.get('has_kids'),
+            'marital_status': profile.get('marital_status'),
+            'height': profile.get('height'),
+            'weight': profile.get('weight')
+        },
+        'health': {
+            'age': profile.get('age'),
+            'bmi': profile.get('bmi'),
+            'diseases': profile.get('diseases', [])
+        },
+        'preferences': preferences
+    }
+
+    return risk_profile, preferences, user_full_data
+
+
+def _normalize_policy_type_for_response(policy_type: Any) -> str:
+    if hasattr(policy_type, "value"):
+        return str(policy_type.value).strip().lower()
+    return str(policy_type).strip().lower()
+
+
+def _recompute_recommendations(user: models.User, db: Session):
+    risk_profile, preferences, user_full_data = _build_recommendation_inputs(user)
+
+    def _safe_float(value, default=0.0):
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    all_policies = db.query(models.Policy).all()
+    if not all_policies:
         return []
-    
+
+    policy_by_id = {p.id: p for p in all_policies}
+    policies_dict = []
+    for p in all_policies:
+        description_value = getattr(p, 'description', None) or p.title
+        policies_dict.append({
+            'id': p.id,
+            'title': p.title,
+            'description': description_value,
+            'premium': _safe_float(p.premium, 0.0),
+            'coverage_amount': getattr(p, 'coverage_amount', None),
+            'coverage': p.coverage or {},
+            'policy_type': _normalize_policy_type_for_response(p.policy_type),
+            'provider_id': p.provider_id,
+            'provider_rating': _safe_float(getattr(p.provider, 'rating', 4.0), 4.0) if p.provider else 4.0,
+        })
+
+    ranked = rank_policies(
+        policies_dict,
+        preferences,
+        risk_profile,
+        user_full_data
+    )
+
     result = []
-    for rec in recommendations:
-        policy = db.query(models.Policy).filter(models.Policy.id == rec.policy_id).first()
-        
-        # Skip if policy doesn't exist
+    for policy_dict, score, reason in ranked:
+        policy = policy_by_id.get(policy_dict['id'])
         if not policy:
             continue
-            
+
+        description_value = getattr(policy, 'description', None) or policy.title
+
         result.append({
-            'id': rec.id,
-            'user_id': rec.user_id,
-            'policy_id': rec.policy_id,
-            'score': float(rec.score),
-            'reason': rec.reason,
-            'created_at': rec.created_at,
+            'id': policy.id,
+            'policy_id': policy.id,
+            'score': float(score),
+            'reason': reason,
             'policy': {
                 'id': policy.id,
                 'title': policy.title,
-                'premium': float(policy.premium),
-                'term_months': policy.term_months,
-                'deductible': float(policy.deductible),
-                'coverage': policy.coverage,
-                'policy_type': policy.policy_type,
-                'created_at': policy.created_at,
-                'provider': {
-                    'id': policy.provider.id,
-                    'name': policy.provider.name,
-                    'country': policy.provider.country,
-                    'created_at': policy.provider.created_at
-                }
+                'description': description_value,
+                'premium': _safe_float(policy.premium, 0.0),
+                'policy_type': _normalize_policy_type_for_response(policy.policy_type),
             }
         })
-    
+
     return result
+
+
+@app.post("/recommendations/generate")
+def generate_recommendations(
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Always recompute recommendations and return the full score-sorted list."""
+    user = _get_recommendation_user(db, token, authorization)
+    try:
+        return _recompute_recommendations(user, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Recommendation generation failed: {str(e)}")
+
+
+@app.get("/recommendations")
+def get_recommendations(
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Always recompute recommendations and return the full score-sorted list."""
+    user = _get_recommendation_user(db, token, authorization)
+    try:
+        return _recompute_recommendations(user, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Recommendation fetch failed: {str(e)}")
 
 @app.delete("/recommendations/{recommendation_id}")
 def delete_recommendation(
     recommendation_id: int,
-    token: str = Query(...),
+    token: str | None = Query(None),
+    authorization: str | None = Header(None),
     db: Session = Depends(get_db)
 ):
     """Delete a specific recommendation"""
-    user = get_current_user(token, db)
+    user = _get_recommendation_user(db, token, authorization)
     
     rec = db.query(models.Recommendation).filter(
         models.Recommendation.id == recommendation_id,
@@ -626,7 +1431,8 @@ def delete_recommendation(
     ).first()
     
     if not rec:
-        raise HTTPException(status_code=404, detail="Recommendation not found")
+        # Recommendations are recomputed dynamically; treat missing rows as already removed.
+        return {"message": "Recommendation removed"}
     
     db.delete(rec)
     db.commit()
@@ -732,6 +1538,7 @@ def get_user_claims(
                 "claim_type": claim.claim_type,
                 "amount_claimed": float(claim.amount_claimed),
                 "status": claim.status,
+                "rejection_reason": getattr(claim, 'rejection_reason', None),  # Handle missing field gracefully
                 "incident_date": str(claim.incident_date),
                 "created_at": str(claim.created_at),
                 "policy": {
@@ -763,7 +1570,12 @@ def get_claim_detail(
     try:
         user = get_current_user(token, db)
         
-        claim = db.query(models.Claim).join(
+        from sqlalchemy.orm import joinedload
+        
+        claim = db.query(models.Claim).options(
+            joinedload(models.Claim.user_policy).joinedload(models.UserPolicy.policy).joinedload(models.Policy.provider),
+            joinedload(models.Claim.documents)
+        ).join(
             models.UserPolicy,
             models.Claim.user_policy_id == models.UserPolicy.id
         ).filter(
@@ -784,6 +1596,7 @@ def get_claim_detail(
             "claim_type": claim.claim_type,
             "amount_claimed": float(claim.amount_claimed),
             "status": claim.status,
+            "rejection_reason": getattr(claim, 'rejection_reason', None),  # Handle missing field gracefully
             "incident_date": str(claim.incident_date),
             "description": claim.description,
             "created_at": str(claim.created_at),
@@ -799,7 +1612,8 @@ def get_claim_detail(
                 {
                     "id": doc.id,
                     "doc_type": doc.doc_type,
-                    "file_url": doc.file_url,
+                    "file_name": doc.file_name,
+                    "file_type": doc.file_type,
                     "uploaded_at": str(doc.uploaded_at)
                 }
                 for doc in claim.documents
@@ -812,21 +1626,36 @@ def get_claim_detail(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/claims/{claim_id}/documents")
 def upload_claim_document(
     claim_id: int,
     file: UploadFile = File(...),
-    doc_type: str = Query(...),
     token: str = Query(...),
+    doc_type: str = Query("other"),
     db: Session = Depends(get_db)
 ):
     """
-    Upload a document to a claim.
-    Documents can be uploaded in draft stage.
-    Accepts file uploads via FormData.
+    Upload a document to a claim. Stores binary file data directly in PostgreSQL.
+    - Validates file type (PDF, JPG, PNG only)
+    - Validates file size (max 10MB)
+    - Stores file content as BYTEA in database
+    - Returns document ID and metadata
     """
+    import logging
+    logger = logging.getLogger("upload_document")
+    
     try:
+        print(f"\n{'='*70}")
+        print(f"[UPLOAD_DOCUMENT] Starting upload for claim_id={claim_id}")
+        print(f"  File name: {file.filename}")
+        print(f"  Content type: {file.content_type}")
+        print(f"  Doc type: {doc_type}")
+        print(f"  Token: {token[:30]}..." if token else "None")
+        
+        # Authenticate user
         user = get_current_user(token, db)
+        print(f"  User authenticated: {user.name} (ID={user.id})")
         
         # Verify claim belongs to user
         claim = db.query(models.Claim).join(
@@ -838,36 +1667,89 @@ def upload_claim_document(
         ).first()
         
         if not claim:
-            raise HTTPException(status_code=404, detail="Claim not found")
+            print(f"  ERROR: Claim {claim_id} not found or doesn't belong to user {user.id}")
+            raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
         
-        # Create file reference (in production, save to cloud storage like S3)
-        # For now, just store the metadata with a unique identifier
-        file_url = f"documents/{claim_id}/{doc_type}_{uuid.uuid4().hex[:8]}_{file.filename}"
+        print(f"  Claim verified: {claim.claim_number}")
+        
+        # Validate file type (allowed MIME types)
+        allowed_types = ["application/pdf", "image/jpeg", "image/png"]
+        if file.content_type not in allowed_types:
+            error_msg = f"Invalid file type: {file.content_type}. Only PDF, JPG, PNG allowed."
+            print(f"  ERROR: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # Read file contents into memory (using synchronous file.file method)
+        print(f"  Reading file contents...")
+        file.file.seek(0)  # Reset to beginning
+        contents = file.file.read()
+        file_size = len(contents)
+        print(f"  File size: {file_size} bytes ({file_size / 1024:.2f} KB)")
+        
+        # Validate file size (max 10MB)
+        max_size = 10 * 1024 * 1024  # 10MB
+        if file_size > max_size:
+            error_msg = f"File too large. Max {max_size // 1024 // 1024}MB allowed."
+            print(f"  ERROR: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # Verify file content is not empty
+        if file_size == 0:
+            error_msg = "File is empty"
+            print(f"  ERROR: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
         
         # Create document record
+        print(f"  Creating ClaimDocument instance...")
         doc = models.ClaimDocument(
             claim_id=claim_id,
-            file_url=file_url,
-            doc_type=doc_type
+            file_data=contents,  # Binary file content
+            file_name=file.filename,  # Original filename
+            file_type=file.content_type,  # MIME type
+            doc_type=doc_type  # Document classification
         )
         
+        # Add to session
+        print(f"  Adding document to database session...")
         db.add(doc)
+        
+        # Commit transaction
+        print(f"  Committing transaction...")
         db.commit()
+        print(f"  Transaction committed successfully")
+        
+        # Refresh to get generated ID
         db.refresh(doc)
+        print(f"  Document ID generated: {doc.id}")
+        print(f"  Upload status: SUCCESSFUL")
+        print(f"{'='*70}\n")
         
         return {
             "id": doc.id,
+            "claim_id": doc.claim_id,
+            "file_name": doc.file_name,
+            "file_type": doc.file_type,
             "doc_type": doc.doc_type,
-            "file_url": doc.file_url,
+            "file_size_bytes": file_size,
             "uploaded_at": str(doc.uploaded_at),
-            "message": "Document uploaded successfully"
+            "message": "Document uploaded and saved to database successfully"
         }
-    
-    except HTTPException:
+        
+    except HTTPException as e:
+        print(f"  HTTP Exception: {e.status_code} - {e.detail}")
+        print(f"{'='*70}\n")
         raise
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"  EXCEPTION: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print(f"{'='*70}\n")
+        try:
+            db.rollback()
+            print(f"  Database rolled back")
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.post("/claims/{claim_id}/submit")
 def submit_claim(
@@ -956,6 +1838,29 @@ def submit_claim(
                 claim_number=claim.claim_number,
                 risk_level=fraud_risk
             )
+        
+        # Create notification for all admins about new claim submission
+        try:
+            admin_users = db.query(models.User).filter(
+                (models.User.role == 'admin') | (models.User.is_admin == True)
+            ).all()
+            
+            for admin_user in admin_users:
+                notification = models.ClaimNotification(
+                    user_id=admin_user.id,
+                    claim_id=claim.id,
+                    notification_type="new_claim_submitted",
+                    title=f"New Claim Submitted - {claim.claim_number}",
+                    message=f"New claim {claim.claim_number} submitted by {user.name} for review. Documents uploaded: {len(claim.documents)}",
+                    admin_id=user.id  # Store who submitted the claim
+                )
+                db.add(notification)
+            
+            db.commit()
+            print(f"Created notifications for {len(admin_users)} admin users")
+        except Exception as notif_err:
+            db.rollback()
+            print(f"Warning: Failed to create admin notifications: {notif_err}")
         
         return response
     
@@ -1355,6 +2260,638 @@ def apply_for_insurance(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error processing application: {str(e)}")
 
+
+# ============ DOCUMENT APPROVAL ENDPOINTS ============
+
+@app.post("/admin/documents/{doc_id}/approve")
+def approve_document(
+    doc_id: int,
+    token: str = Query(...),
+    comments: str = Query("", description="Optional comments"),
+    db: Session = Depends(get_db)
+):
+    """
+    Approve a document for a claim.
+    Admin only endpoint.
+    
+    This endpoint only approves the individual document.
+    The claim status is updated based on ALL documents:
+    - If all documents are approved → claim is approved
+    - If any document is rejected → claim is rejected
+    - If any document is pending → claim stays under review
+    """
+    try:
+        user = get_current_user(token, db)
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        doc = db.query(models.ClaimDocument).filter(
+            models.ClaimDocument.id == doc_id
+        ).first()
+        
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Check if already has an approval record
+        existing_approval = db.query(models.DocumentApproval).filter(
+            models.DocumentApproval.document_id == doc_id
+        ).first()
+        
+        if existing_approval:
+            # If already approved, return success (idempotent)
+            if existing_approval.status == models.DocumentApprovalStatusEnum.approved:
+                print(f"Document {doc_id} already approved, returning success (idempotent)")
+                return {
+                    "message": "Document already approved",
+                    "document_id": doc_id,
+                    "status": "approved",
+                    "reviewed_at": str(existing_approval.reviewed_at)
+                }
+            # If rejected, update to approved (allow re-approval)
+            elif existing_approval.status == models.DocumentApprovalStatusEnum.rejected:
+                existing_approval.status = models.DocumentApprovalStatusEnum.approved
+                existing_approval.admin_id = user.id
+                existing_approval.comments = comments if comments else None
+                existing_approval.reviewed_at = datetime.utcnow()
+                db.commit()
+                approval = existing_approval
+            else:
+                # If pending, update to approved
+                existing_approval.status = models.DocumentApprovalStatusEnum.approved
+                existing_approval.admin_id = user.id
+                existing_approval.comments = comments if comments else None
+                existing_approval.reviewed_at = datetime.utcnow()
+                db.commit()
+                approval = existing_approval
+        else:
+            # Create new approval record - mark document as approved
+            approval = models.DocumentApproval(
+                document_id=doc_id,
+                admin_id=user.id,
+                status=models.DocumentApprovalStatusEnum.approved,
+                comments=comments if comments else None,
+                reviewed_at=datetime.utcnow()
+            )
+            db.add(approval)
+            db.commit()
+        
+        # NOW: Update claim status based on ALL documents, not just this one
+        try:
+            if doc.claim_id:
+                claim_update_result = ClaimService.update_claim_status_based_on_documents(
+                    doc.claim_id, db
+                )
+                print(f"Claim {doc.claim_id} status updated: {claim_update_result}")
+                
+                # If claim status changed, create appropriate notification
+                if claim_update_result["status_changed"]:
+                    claim = db.query(models.Claim).filter(
+                        models.Claim.id == doc.claim_id
+                    ).first()
+                    
+                    if claim and claim.user_policy_id:
+                        user_policy = db.query(models.UserPolicy).filter(
+                            models.UserPolicy.id == claim.user_policy_id
+                        ).first()
+                        
+                        if user_policy and user_policy.user_id:
+                            if claim.status == models.ClaimStatusEnum.approved:
+                                notification = models.ClaimNotification(
+                                    user_id=user_policy.user_id,
+                                    claim_id=claim.id,
+                                    notification_type="claim_approved",
+                                    title="✅ Claim Approved!",
+                                    message=f"All documents have been approved. Your claim {claim.claim_number} is now approved.",
+                                    admin_id=user.id
+                                )
+                                db.add(notification)
+                                db.commit()
+                            elif claim.status == models.ClaimStatusEnum.rejected:
+                                notification = models.ClaimNotification(
+                                    user_id=user_policy.user_id,
+                                    claim_id=claim.id,
+                                    notification_type="claim_rejected",
+                                    title="❌ Claim Rejected",
+                                    message=claim.rejection_reason or "Your claim has been rejected.",
+                                    admin_id=user.id
+                                )
+                                db.add(notification)
+                                db.commit()
+        except Exception as status_err:
+            db.rollback()
+            print(f"Warning: Failed to update claim status: {status_err}")
+        
+        # Log admin action (in separate transaction)
+        try:
+            admin_log = models.AdminLog(
+                admin_id=user.id,
+                action="DOCUMENT_APPROVED",
+                target_type="document",
+                target_id=doc_id
+            )
+            db.add(admin_log)
+            db.commit()
+        except Exception as log_err:
+            db.rollback()
+            print(f"Warning: Failed to log action: {log_err}")
+        
+        # Create notification for this document approval (unless claim was already fully approved)
+        try:
+            if doc.claim_id:
+                claim = db.query(models.Claim).filter(
+                    models.Claim.id == doc.claim_id
+                ).first()
+                
+                if claim and claim.user_policy_id and claim.status != models.ClaimStatusEnum.approved:
+                    user_policy = db.query(models.UserPolicy).filter(
+                        models.UserPolicy.id == claim.user_policy_id
+                    ).first()
+                    if user_policy and user_policy.user_id:
+                        notification = models.ClaimNotification(
+                            user_id=user_policy.user_id,
+                            claim_id=claim.id,
+                            notification_type="document_approved",
+                            title=f"Document Approved - {doc.doc_type or doc.file_name}",
+                            message=f"Your {doc.doc_type or 'document'} has been reviewed and approved by admin.{' Comments: ' + comments if comments else ''}",
+                            admin_id=user.id
+                        )
+                        db.add(notification)
+                        db.commit()
+        except Exception as notif_err:
+            db.rollback()
+            print(f"Warning: Failed to create notification: {notif_err}")
+        
+        return {
+            "message": "Document approved successfully",
+            "document_id": doc_id,
+            "status": "approved",
+            "reviewed_at": str(approval.reviewed_at)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Error in approve_document: {e}")
+        raise HTTPException(status_code=500, detail=f"Error approving document: {str(e)}")
+
+@app.post("/admin/documents/{doc_id}/reject")
+def reject_document(
+    doc_id: int,
+    token: str = Query(...),
+    reason: str = Query("", description="Reason for rejection"),
+    db: Session = Depends(get_db)
+):
+    """
+    Reject a document for a claim.
+    Admin only endpoint.
+    
+    This endpoint only rejects the individual document.
+    The claim status is updated based on ALL documents:
+    - If any document is rejected → claim is rejected immediately
+    - If all documents are approved → claim is approved
+    - If any document is pending → claim stays under review
+    """
+    try:
+        user = get_current_user(token, db)
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        doc = db.query(models.ClaimDocument).filter(
+            models.ClaimDocument.id == doc_id
+        ).first()
+        
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Check if already has an approval record
+        existing_approval = db.query(models.DocumentApproval).filter(
+            models.DocumentApproval.document_id == doc_id
+        ).first()
+        
+        if existing_approval:
+            # If already rejected with the same reason, return success (idempotent)
+            if existing_approval.status == models.DocumentApprovalStatusEnum.rejected:
+                print(f"Document {doc_id} already rejected, returning success (idempotent)")
+                return {
+                    "message": "Document already rejected",
+                    "document_id": doc_id,
+                    "status": "rejected",
+                    "reviewed_at": str(existing_approval.reviewed_at)
+                }
+            # If approved, update to rejected (allow rejection after approval)
+            elif existing_approval.status == models.DocumentApprovalStatusEnum.approved:
+                existing_approval.status = models.DocumentApprovalStatusEnum.rejected
+                existing_approval.admin_id = user.id
+                existing_approval.comments = reason if reason else None
+                existing_approval.rejection_reason = reason if reason else None
+                existing_approval.reviewed_at = datetime.utcnow()
+                db.commit()
+                approval = existing_approval
+            else:
+                # If pending, update to rejected
+                existing_approval.status = models.DocumentApprovalStatusEnum.rejected
+                existing_approval.admin_id = user.id
+                existing_approval.comments = reason if reason else None
+                existing_approval.rejection_reason = reason if reason else None
+                existing_approval.reviewed_at = datetime.utcnow()
+                db.commit()
+                approval = existing_approval
+        else:
+            # Create new rejection record
+            approval = models.DocumentApproval(
+                document_id=doc_id,
+                admin_id=user.id,
+                status=models.DocumentApprovalStatusEnum.rejected,
+                comments=reason if reason else None,
+                rejection_reason=reason if reason else None,
+                reviewed_at=datetime.utcnow()
+            )
+            db.add(approval)
+            db.commit()
+        
+        # NOW: Update claim status based on ALL documents
+        # If ANY document is rejected, the entire claim is rejected
+        try:
+            if doc.claim_id:
+                claim_update_result = ClaimService.update_claim_status_based_on_documents(
+                    doc.claim_id, db
+                )
+                print(f"Claim {doc.claim_id} status updated: {claim_update_result}")
+                
+                # Create notification about claim rejection
+                claim = db.query(models.Claim).filter(
+                    models.Claim.id == doc.claim_id
+                ).first()
+                
+                if claim and claim.user_policy_id:
+                    user_policy = db.query(models.UserPolicy).filter(
+                        models.UserPolicy.id == claim.user_policy_id
+                    ).first()
+                    
+                    if user_policy and user_policy.user_id:
+                        notification = models.ClaimNotification(
+                            user_id=user_policy.user_id,
+                            claim_id=claim.id,
+                            notification_type="claim_rejected",
+                            title="❌ Claim Rejected",
+                            message=claim.rejection_reason or f"Your claim has been rejected due to document issues.",
+                            admin_id=user.id
+                        )
+                        db.add(notification)
+                        db.commit()
+        except Exception as status_err:
+            db.rollback()
+            print(f"Warning: Failed to update claim status: {status_err}")
+        
+        # Log admin action (in separate transaction)
+        try:
+            admin_log = models.AdminLog(
+                admin_id=user.id,
+                action="DOCUMENT_REJECTED",
+                target_type="document",
+                target_id=doc_id
+            )
+            db.add(admin_log)
+            db.commit()
+        except Exception as log_err:
+            db.rollback()
+            print(f"Warning: Failed to log action: {log_err}")
+        
+        # Create notification about document rejection
+        try:
+            if doc.claim_id:
+                claim = db.query(models.Claim).filter(models.Claim.id == doc.claim_id).first()
+                if claim and claim.user_policy_id:
+                    user_policy = db.query(models.UserPolicy).filter(models.UserPolicy.id == claim.user_policy_id).first()
+                    if user_policy and user_policy.user_id:
+                        notification = models.ClaimNotification(
+                            user_id=user_policy.user_id,
+                            claim_id=claim.id,
+                            notification_type="document_rejected",
+                            title=f"Document Rejected - {doc.doc_type or doc.file_name}",
+                            message=f"Your {doc.doc_type or 'document'} has been reviewed and rejected. Reason: {reason if reason else 'Does not meet requirements'} Please upload the correct document.",
+                            admin_id=user.id
+                        )
+                        db.add(notification)
+                        db.commit()
+        except Exception as notif_err:
+            db.rollback()
+            print(f"Warning: Failed to create notification: {notif_err}")
+        
+        return {
+            "message": "Document rejected successfully",
+            "document_id": doc_id,
+            "status": "rejected",
+            "reviewed_at": str(approval.reviewed_at)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Error in reject_document: {e}")
+        raise HTTPException(status_code=500, detail=f"Error rejecting document: {str(e)}")
+
+
+# ============ ADMIN: CLAIM DOCUMENTS API ============
+
+@app.get("/admin/claim-documents")
+def list_claim_documents(
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    List all claim documents stored in database.
+    Admin only endpoint.
+    Returns: list of documents with claim_id, file_name, file_type, uploaded_at
+    """
+    try:
+        # Authenticate user
+        user = get_current_user(token, db)
+        
+        # Check admin authorization
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Retrieve all documents with claim information
+        documents = db.query(models.ClaimDocument).all()
+        
+        result = []
+        for doc in documents:
+            result.append({
+                "id": doc.id,
+                "claim_id": doc.claim_id,
+                "file_name": doc.file_name,
+                "file_type": doc.file_type,
+                "doc_type": doc.doc_type,
+                "file_size_bytes": len(doc.file_data) if doc.file_data else 0,
+                "uploaded_at": str(doc.uploaded_at),
+                "claim_owner": doc.claim.user_policy.user.name if doc.claim and doc.claim.user_policy else None
+            })
+        
+        return {"total": len(result), "documents": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/claim-documents/{doc_id}")
+def download_claim_document(
+    doc_id: int,
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Download/retrieve a specific claim document.
+    Admin only endpoint.
+    Returns file as StreamingResponse with appropriate MIME type.
+    """
+    try:
+        # Authenticate user
+        user = get_current_user(token, db)
+        
+        # Check admin authorization
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Retrieve document from database
+        doc = db.query(models.ClaimDocument).filter(
+            models.ClaimDocument.id == doc_id
+        ).first()
+        
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        if not doc.file_data:
+            raise HTTPException(status_code=404, detail="Document has no file data")
+        
+        # Return file as streaming response with proper headers
+        return StreamingResponse(
+            iter([doc.file_data]),  # Stream the binary data
+            media_type=doc.file_type,  # Use stored MIME type
+            headers={
+                "Content-Disposition": f"attachment; filename={doc.file_name}"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/documents/{doc_id}/view")
+def view_claim_document(
+    doc_id: int,
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    View/display a specific claim document in browser.
+    Admin only endpoint.
+    Returns file as StreamingResponse with inline display (not attachment).
+    Supports: PDF, images, text files.
+    """
+    try:
+        # Authenticate user
+        user = get_current_user(token, db)
+        
+        # Check admin authorization
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Retrieve document from database
+        doc = db.query(models.ClaimDocument).filter(
+            models.ClaimDocument.id == doc_id
+        ).first()
+        
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        if not doc.file_data:
+            raise HTTPException(status_code=404, detail="Document file data is missing or corrupted")
+        
+        # Map file extensions to viewable MIME types
+        file_type = doc.file_type or 'application/octet-stream'
+        
+        # Determine if file is viewable in browser
+        viewable_types = [
+            'application/pdf',
+            'image/jpeg',
+            'image/png',
+            'image/gif',
+            'image/webp',
+            'text/plain',
+            'text/html'
+        ]
+        
+        # If MIME type not explicitly viewable, try to infer from filename
+        is_viewable = False
+        if file_type in viewable_types:
+            is_viewable = True
+        elif doc.file_name:
+            file_name_lower = doc.file_name.lower()
+            if any(file_name_lower.endswith(ext) for ext in ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.txt', '.html']):
+                is_viewable = True
+        
+        # Return file as response with inline display
+        from fastapi.responses import Response
+        return Response(
+            content=doc.file_data,  # Binary data from BYTEA column
+            media_type=file_type,  # Use stored MIME type
+            headers={
+                "Content-Disposition": f"inline; filename={doc.file_name}",  # Display inline instead of download
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "X-Content-Type-Options": "nosniff"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error retrieving document: {str(e)}")
+
+
+# ============ ADMIN PORTAL ENDPOINTS ============
+
+@app.get("/admin/dashboard-stats")
+def get_admin_stats_endpoint(
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Get admin dashboard statistics.
+    Requires admin role.
+    
+    Returns:
+        - total_users: Total registered users
+        - total_admins: Number of admin users
+        - total_policies: Total policies available
+        - total_claims: Total claims submitted
+        - total_documents: Total documents uploaded
+        - active_claims: Claims currently in progress
+    """
+    user = get_current_user(token, db)
+    
+    # Check admin role
+    if user.role != 'admin' and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        from backend.admin_auth import get_admin_stats
+        stats = get_admin_stats(db)
+        return {
+            "status": "success",
+            "data": stats
+        }
+    except Exception as e:
+        print(f"Error getting admin stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/users")
+def get_all_users(
+    token: str = Query(...),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """
+    List all registered users.
+    Requires admin role.
+    
+    Query Parameters:
+        - skip: Offset for pagination (default 0)
+        - limit: Maximum records to return (default 100, max 1000)
+    
+    Returns:
+        - total_count: Total users in system
+        - users: Array of user objects with name, email, role, etc.
+    """
+    user = get_current_user(token, db)
+    
+    # Check admin role
+    if user.role != 'admin' and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        from backend.admin_auth import get_user_list
+        result = get_user_list(db, skip=skip, limit=limit)
+        return {
+            "status": "success",
+            "data": result
+        }
+    except Exception as e:
+        print(f"Error getting users: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/claim-documents-list")
+def get_all_documents(
+    token: str = Query(...),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    claim_number: str = Query(None, description="Optional claim number to filter by"),
+    db: Session = Depends(get_db)
+):
+    """
+    List all uploaded documents.
+    Requires admin role.
+    
+    Query Parameters:
+        - skip: Offset for pagination
+        - limit: Maximum records to return
+        - claim_number: Optional claim number to filter results
+    
+    Returns:
+        - total_count: Total documents in system
+        - documents: Array of document objects with metadata
+    """
+    user = get_current_user(token, db)
+    
+    # Check admin role
+    if user.role != 'admin' and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        from backend.admin_auth import get_documents_list
+        result = get_documents_list(db, skip=skip, limit=limit, claim_number=claim_number)
+        return {
+            "status": "success",
+            "data": result
+        }
+    except Exception as e:
+        print(f"Error getting documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/verify-role")
+def verify_admin_role(
+    token: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Verify if the current user has admin role.
+    Used by frontend to check access rights.
+    
+    Returns:
+        - is_admin: Boolean indicating admin status
+        - role: User's role (user or admin)
+        - user_id: User ID
+    """
+    try:
+        user = get_current_user(token, db)
+        if not user:
+            return {"is_admin": False, "role": None}
+        
+        is_admin_user = user.role == 'admin' or user.is_admin
+        return {
+            "is_admin": is_admin_user,
+            "role": user.role,
+            "user_id": user.id,
+            "email": user.email
+        }
+    except Exception as e:
+        print(f"Error verifying role: {e}")
+        return {"is_admin": False, "role": None, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn

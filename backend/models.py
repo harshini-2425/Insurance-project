@@ -1,8 +1,12 @@
-from sqlalchemy import Column, Integer, String, Date, JSON, TIMESTAMP, ForeignKey, Numeric, Boolean, Enum as SQLEnum, Text
+from sqlalchemy import Column, Integer, String, Date, JSON, TIMESTAMP, ForeignKey, Numeric, Boolean, Enum as SQLEnum, Text, LargeBinary
 from sqlalchemy.orm import relationship
-from database import Base
+from .database import Base
 from datetime import datetime
 import enum
+
+class UserRoleEnum(str, enum.Enum):
+    user = "user"
+    admin = "admin"
 
 class User(Base):
     __tablename__ = "users"
@@ -13,13 +17,15 @@ class User(Base):
     password = Column(String, nullable=False)
     dob = Column(Date)
     risk_profile = Column(JSON, nullable=True)
+    role = Column(SQLEnum(UserRoleEnum), default=UserRoleEnum.user, nullable=False)  # Role-based access
+    is_admin = Column(Boolean, default=False)  # For backward compatibility
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
-    
     # Relationships
     user_policies = relationship("UserPolicy", back_populates="user")
     recommendations = relationship("Recommendation", back_populates="user")
     fraud_flags = relationship("FraudFlag", back_populates="flagged_by_user")
     admin_logs = relationship("AdminLog", back_populates="admin")
+    notifications = relationship("ClaimNotification", foreign_keys="ClaimNotification.user_id")
 
 class Provider(Base):
     __tablename__ = "providers"
@@ -101,6 +107,7 @@ class Claim(Base):
     amount_claimed = Column(Numeric(10, 2), nullable=False)
     description = Column(Text, nullable=True)
     status = Column(SQLEnum(ClaimStatusEnum), default=ClaimStatusEnum.draft)
+    rejection_reason = Column(Text, nullable=True)  # Stores reason for claim rejection (which document and why)
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
     
     # Relationships
@@ -113,12 +120,40 @@ class ClaimDocument(Base):
     
     id = Column(Integer, primary_key=True)
     claim_id = Column(Integer, ForeignKey("claims.id"), nullable=False)
-    file_url = Column(String, nullable=False)
+    # Store file binary data directly in database
+    file_data = Column(LargeBinary, nullable=False)
+    # Original filename for download
+    file_name = Column(String, nullable=False)
+    # MIME type (e.g., application/pdf, image/jpeg)
+    file_type = Column(String, nullable=False)
+    # Document type (e.g., medical_report, receipt, etc.) from ui
     doc_type = Column(String, nullable=False)
+    # Timestamp when file was uploaded
     uploaded_at = Column(TIMESTAMP, default=datetime.utcnow)
-    
+
     # Relationships
     claim = relationship("Claim", back_populates="documents")
+    approval = relationship("DocumentApproval", back_populates="document", uselist=False)
+
+class DocumentApprovalStatusEnum(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+
+class DocumentApproval(Base):
+    __tablename__ = "document_approvals"
+    
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("claim_documents.id"), nullable=False, unique=True)
+    admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(SQLEnum(DocumentApprovalStatusEnum), default=DocumentApprovalStatusEnum.pending)
+    comments = Column(Text, nullable=True)
+    rejection_reason = Column(Text, nullable=True)  # Reason for rejection (if rejected)
+    reviewed_at = Column(TIMESTAMP, nullable=True)
+    
+    # Relationships
+    document = relationship("ClaimDocument", back_populates="approval")
+    admin = relationship("User")
 
 class Recommendation(Base):
     __tablename__ = "recommendations"
@@ -159,10 +194,40 @@ class AdminLog(Base):
     
     id = Column(Integer, primary_key=True)
     admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    action = Column(String, nullable=False)
-    target_type = Column(String, nullable=False)
+    action = Column(String, nullable=False)  # approve, reject, review, etc.
+    action_type = Column(String, nullable=False)  # claim, document, user, etc.
+    target_type = Column(String, nullable=False)  # claim, document, etc.
     target_id = Column(Integer, nullable=False)
-    timestamp = Column(TIMESTAMP, default=datetime.utcnow)
+    old_value = Column(JSON, nullable=True)  # Previous state
+    new_value = Column(JSON, nullable=True)  # New state
+    reason = Column(Text, nullable=True)  # Reason for action
+    ip_address = Column(String, nullable=True)
+    details = Column(JSON, nullable=True)  # Additional details
+    timestamp = Column(TIMESTAMP, default=datetime.utcnow, index=True)
     
     # Relationships
     admin = relationship("User", back_populates="admin_logs")
+
+class NotificationStatusEnum(str, enum.Enum):
+    unread = "unread"
+    read = "read"
+    archived = "archived"
+
+class ClaimNotification(Base):
+    __tablename__ = "claim_notifications"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    claim_id = Column(Integer, ForeignKey("claims.id"), nullable=False)
+    notification_type = Column(String, nullable=False)  # claim_approved, claim_rejected, document_reviewed, etc.
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(SQLEnum(NotificationStatusEnum), default=NotificationStatusEnum.unread)
+    admin_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Which admin took action
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, index=True)
+    read_at = Column(TIMESTAMP, nullable=True)
+    
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id])
+    claim = relationship("Claim")
+    admin = relationship("User", foreign_keys=[admin_id])
