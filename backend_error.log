@@ -1,0 +1,8 @@
+INFO:     Will watch for changes in these directories: ['C:\\newproject']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [19084] using StatReload
+INFO:     Started server process [21040]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+C:\newproject\backend\main.py:807: SAWarning: relationship 'ClaimNotification.user' will copy column users.id to column claim_notifications.user_id, which conflicts with relationship(s): 'User.notifications' (copies users.id to claim_notifications.user_id). If this is not the intention, consider if these relationships should be linked with back_populates, or if viewonly=True should be applied to one or more if they are read-only. For the less common case that foreign key constraints are partially overlapping, the orm.foreign() annotation can be used to isolate the columns that should be written towards.   To silence this warning, add the parameter 'overlaps="notifications"' to the 'ClaimNotification.user' relationship. (Background on this warning at: https://sqlalche.me/e/20/qzyx) (This warning originated from the `configure_mappers()` process, which was invoked automatically in response to a user-initiated operation.)
+  user = db.query(models.User).filter(models.User.email == data.email).first()

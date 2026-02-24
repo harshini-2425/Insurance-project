@@ -279,139 +279,140 @@ const styles = `
 `;
 
 export default function Register() {
-    const [form, setForm] = useState({ name: "", email: "", password: "", dob: "" });
-    const [error, setError] = useState("");
-    const navigate = useNavigate();
-    const token = localStorage.getItem('token');
+  const [form, setForm] = useState({ name: "", email: "", password: "", dob: "" });
+  const [error, setError] = useState("");
+  const navigate = useNavigate();
+  const token = localStorage.getItem('token');
 
-    if (token) {
-        return <Navigate to="/" replace />;
+  if (token) {
+    return <Navigate to="/" replace />;
+  }
+
+  const submit = async () => {
+    try {
+      setError("");
+
+      if (!form.name || !form.email || !form.password || !form.dob) {
+        setError("Please fill in all fields");
+        return;
+      }
+
+      const res = await fetch("http://localhost:8000/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form)
+      });
+
+      const json = await res.json();
+
+      if (json.access_token) {
+        localStorage.setItem("token", json.access_token);
+        localStorage.setItem("user_id", json.user_id);
+        localStorage.setItem("is_admin", json.user?.is_admin ? 'true' : 'false');
+        localStorage.setItem("user", JSON.stringify(json.user || {}));
+        navigate("/home");
+      } else {
+        setError(json.detail || "Registration failed");
+      }
+    } catch (err) {
+      setError("Error registering: " + err.message);
     }
+  };
 
-    const submit = async () => {
-        try {
-            setError("");
-
-            if (!form.name || !form.email || !form.password || !form.dob) {
-                setError("Please fill in all fields");
-                return;
-            }
-
-            const res = await fetch("http://localhost:8000/auth/register", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(form)
-            });
-
-            const json = await res.json();
-
-            if (json.access_token) {
-                localStorage.setItem("token", json.access_token);
-                localStorage.setItem("user_id", json.user_id);
-                localStorage.setItem("is_admin", json.user?.is_admin ? 'true' : 'false');
-                navigate("/");
-            } else {
-                setError(json.detail || "Registration failed");
-            }
-        } catch (err) {
-            setError("Error registering: " + err.message);
-        }
-    };
-
-    return (
-        <>
-            <style>{styles}</style>
-            <div className="register-root">
-                <div className="register-grid">
-                    {/* Left panel */}
-                    <div className="register-left">
-                        <div className="register-left-brand">
-                            <div className="register-left-logo">Insure<span>Compare</span></div>
-                            <div className="register-left-tagline">Smart insurance decisions</div>
-                        </div>
-
-                        <div className="register-left-body">
-                            <h2 className="register-left-headline">
-                                Find the <em>perfect</em><br />plan for you
-                            </h2>
-                            <p className="register-left-desc">
-                                Compare hundreds of insurance plans side-by-side and save money on coverage that actually fits your life.
-                            </p>
-                        </div>
-
-                        <div className="register-left-features">
-                            {["Compare plans instantly", "Unbiased recommendations", "Secure & confidential"].map(f => (
-                                <div className="register-feature" key={f}>
-                                    <div className="register-feature-dot" />
-                                    {f}
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Right panel */}
-                    <div className="register-right">
-                        <h1 className="register-title">Create account</h1>
-                        <p className="register-subtitle">Join thousands of smart insurance shoppers</p>
-
-                        {error && (
-                            <div className="register-error">
-                                <span>⚠</span> {error}
-                            </div>
-                        )}
-
-                        <div className="register-field">
-                            <label className="register-label">Full Name</label>
-                            <input
-                                className="register-input"
-                                placeholder="John Doe"
-                                value={form.name}
-                                onChange={e => setForm({ ...form, name: e.target.value })}
-                            />
-                        </div>
-
-                        <div className="register-field">
-                            <label className="register-label">Email</label>
-                            <input
-                                className="register-input"
-                                type="email"
-                                placeholder="you@example.com"
-                                value={form.email}
-                                onChange={e => setForm({ ...form, email: e.target.value })}
-                            />
-                        </div>
-
-                        <div className="register-field">
-                            <label className="register-label">Password</label>
-                            <input
-                                className="register-input"
-                                type="password"
-                                placeholder="••••••••"
-                                value={form.password}
-                                onChange={e => setForm({ ...form, password: e.target.value })}
-                            />
-                        </div>
-
-                        <div className="register-field">
-                            <label className="register-label">Date of Birth</label>
-                            <input
-                                className="register-input"
-                                type="date"
-                                value={form.dob}
-                                onChange={e => setForm({ ...form, dob: e.target.value })}
-                            />
-                        </div>
-
-                        <button className="register-btn" onClick={submit}>
-                            Create Account →
-                        </button>
-
-                        <p className="register-footer">
-                            Already have an account? <a href="/login">Sign in</a>
-                        </p>
-                    </div>
-                </div>
+  return (
+    <>
+      <style>{styles}</style>
+      <div className="register-root">
+        <div className="register-grid">
+          {/* Left panel */}
+          <div className="register-left">
+            <div className="register-left-brand">
+              <div className="register-left-logo">Insure<span>Compare</span></div>
+              <div className="register-left-tagline">Smart insurance decisions</div>
             </div>
-        </>
-    );
+
+            <div className="register-left-body">
+              <h2 className="register-left-headline">
+                Find the <em>perfect</em><br />plan for you
+              </h2>
+              <p className="register-left-desc">
+                Compare hundreds of insurance plans side-by-side and save money on coverage that actually fits your life.
+              </p>
+            </div>
+
+            <div className="register-left-features">
+              {["Compare plans instantly", "Unbiased recommendations", "Secure & confidential"].map(f => (
+                <div className="register-feature" key={f}>
+                  <div className="register-feature-dot" />
+                  {f}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Right panel */}
+          <div className="register-right">
+            <h1 className="register-title">Create account</h1>
+            <p className="register-subtitle">Join thousands of smart insurance shoppers</p>
+
+            {error && (
+              <div className="register-error">
+                <span>⚠</span> {error}
+              </div>
+            )}
+
+            <div className="register-field">
+              <label className="register-label">Full Name</label>
+              <input
+                className="register-input"
+                placeholder="John Doe"
+                value={form.name}
+                onChange={e => setForm({ ...form, name: e.target.value })}
+              />
+            </div>
+
+            <div className="register-field">
+              <label className="register-label">Email</label>
+              <input
+                className="register-input"
+                type="email"
+                placeholder="you@example.com"
+                value={form.email}
+                onChange={e => setForm({ ...form, email: e.target.value })}
+              />
+            </div>
+
+            <div className="register-field">
+              <label className="register-label">Password</label>
+              <input
+                className="register-input"
+                type="password"
+                placeholder="••••••••"
+                value={form.password}
+                onChange={e => setForm({ ...form, password: e.target.value })}
+              />
+            </div>
+
+            <div className="register-field">
+              <label className="register-label">Date of Birth</label>
+              <input
+                className="register-input"
+                type="date"
+                value={form.dob}
+                onChange={e => setForm({ ...form, dob: e.target.value })}
+              />
+            </div>
+
+            <button className="register-btn" onClick={submit}>
+              Create Account →
+            </button>
+
+            <p className="register-footer">
+              Already have an account? <a href="/login">Sign in</a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </>
+  );
 }

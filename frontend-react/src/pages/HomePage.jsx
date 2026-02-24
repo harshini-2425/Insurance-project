@@ -113,7 +113,7 @@ export default function HomePage() {
                     <section style={S.header}>
                         <span style={S.eyebrow}>👋 Welcome back</span>
                         <h1 style={S.h1}>
-                            Hello, <span style={S.nameAccent}>{userData?.name || 'User'}</span>
+                            Hello, <span style={S.nameAccent}>{userData?.name}</span>
                         </h1>
                         <div style={S.accentBar} />
                         <p style={S.headerSub}>Manage your policies, claims, and get smart AI recommendations.</p>
